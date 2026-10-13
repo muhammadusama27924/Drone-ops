@@ -106,6 +106,7 @@
 <div id="reticle" hidden></div>
 <div id="hud">
   <div id="pilotTag" style="display:none; font-family:monospace; font-size:11px; color:#8f9bb0; letter-spacing:.04em;"></div>
+  <div id="diagTag" style="display:none; font-family:monospace; font-size:11px; color:#ff6b6b; letter-spacing:.02em; max-width:280px;"></div>
   <div id="armed"><i></i><span id="armedText">Motors disarmed</span></div>
   <div id="sticks">
     <div class="stick"><div class="gimbal"><div class="dot" id="dotL"></div></div><span>Throttle / yaw</span></div>
@@ -745,8 +746,24 @@ async function main() {
     const ok = finite(pos.x, pos.y, pos.z, r.x, r.y, r.z, r.w, lv.x, lv.y, lv.z, av.x, av.y, av.z)
                && r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w > 0.5;
     if (!ok) {
+      // Diagnostic build: name exactly which field broke and print the full pre-reset state, roughly
+      // once a second (every 60th hit) rather than only 3 times ever -- if this is firing continuously,
+      // F12 -> Console will now show precisely what's going non-finite instead of a generic warning.
+      if (resetCount % 60 === 0) {
+        const bad = Object.entries({ 'pos.x': pos.x, 'pos.y': pos.y, 'pos.z': pos.z, 'rot.x': r.x, 'rot.y': r.y,
+          'rot.z': r.z, 'rot.w': r.w, 'vel.x': lv.x, 'vel.y': lv.y, 'vel.z': lv.z, 'angvel.x': av.x, 'angvel.y': av.y, 'angvel.z': av.z })
+          .filter(([, v]) => !Number.isFinite(v)).map(([k]) => k);
+        const badList = bad.length ? bad.join(', ') : 'quaternion near-zero';
+        console.warn(`[drone-sim] Rigid body state invalid (hit #${resetCount}). Non-finite: ${badList}.`,
+          { pos: { ...pos }, rot: { ...r }, vel: { ...lv }, angvel: { ...av }, build, manualThrottle, spin });
+        const diagTag = document.getElementById('diagTag');
+        if (diagTag) {
+          diagTag.textContent = `DIAG: reset #${resetCount} \u00b7 bad: ${badList} \u00b7 mass=${build.mass.toFixed(2)} thrust=${build.maxThrust.toFixed(1)} throttle=${manualThrottle.toFixed(2)} spin=${spin.toFixed(2)}`;
+          diagTag.style.display = 'block';
+        }
+      }
+      resetCount++;
       resetDrone();
-      if (resetCount++ < 3) console.warn('Rigid body state was not finite; drone reset to hover position.');
     }
   }
   function sanitizeState() {       // controller / telemetry state that could carry a NaN forward
