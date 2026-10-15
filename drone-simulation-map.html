@@ -1398,8 +1398,13 @@ async function main() {
     // Guard before normalize(): dividing a zero-length (or non-finite) vector by its own length
     // produces NaN directly -- catch it here rather than downstream.
     if (!finite(desiredUp.x, desiredUp.y, desiredUp.z) || desiredUp.lengthSq() < 1e-8) {
-      logGuardHit('desiredUp', `desiredUp=(${desiredUp.x},${desiredUp.y},${desiredUp.z}) landed=${landed} pitCmd=${pitCmd} rolCmd=${rolCmd} holdValid=${holdValid}`);
+      logGuardHit('desiredUp', `desiredUp=(${desiredUp.x},${desiredUp.y},${desiredUp.z}) landed=${landed} pitCmd=${pitCmd} rolCmd=${rolCmd} holdValid=${holdValid} hold=(${hold.x},${hold.y})`);
       desiredUp.set(0, 1, 0);
+      // The position-hold anchor (`hold`) is set once and then reused every frame until the pilot
+      // steers or lands -- if it (or the math built from it) ever goes bad, it would otherwise stay
+      // bad forever, re-triggering this guard every single step. Clearing holdValid forces a fresh,
+      // known-good anchor to be captured on the very next frame instead.
+      holdValid = false;
     }
     desiredUp.normalize();
 
