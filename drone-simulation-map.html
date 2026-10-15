@@ -741,6 +741,15 @@ async function main() {
     body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     holdValid = false; posInt.set(0, 0); manualThrottle = 0; prevSpeed = 0;
   }
+  const guardHitCounts = {};
+  function logGuardHit(name, detail) {
+    const n = (guardHitCounts[name] = (guardHitCounts[name] || 0) + 1);
+    if (n <= 20 || n % 60 === 0) {   // dense at first (catches the very first occurrence), then throttled
+      console.warn(`[drone-sim] GUARD "${name}" caught a non-finite value (hit #${n}). ${detail}`);
+      const diagTag = document.getElementById('diagTag');
+      if (diagTag) { diagTag.textContent = `GUARD: ${name} #${n} \u00b7 ${detail}`; diagTag.style.display = 'block'; }
+    }
+  }
   function sanitizeBody() {        // call before applying forces and before copying the pose to Three.js
     const pos = body.translation(), r = body.rotation(), lv = body.linvel(), av = body.angvel();
     const ok = finite(pos.x, pos.y, pos.z, r.x, r.y, r.z, r.w, lv.x, lv.y, lv.z, av.x, av.y, av.z)
@@ -1288,6 +1297,18 @@ async function main() {
 
     const r = body.rotation(), p = body.translation(), v = body.linvel();
     const droneQuaternion = quat.set(r.x, r.y, r.z, r.w);
+    // Defensive: a rigid body's rotation quaternion can drift from unit length over many
+    // integration steps; if it drifts far enough, every rotation-dependent calculation below
+    // (up, fwd, desiredUp, torque) inherits the error, and in the worst case produces NaN that
+    // then poisons position too. Renormalize here, and write the corrected value back to Rapier,
+    // rather than only ever reacting after the fact in sanitizeBody().
+    const qLenSq = droneQuaternion.lengthSq();
+    if (!Number.isFinite(qLenSq) || qLenSq < 0.5) {
+      logGuardHit('quat-degenerate', `lengthSq=${qLenSq}`);
+      body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true); droneQuaternion.set(0, 0, 0, 1);
+    } else if (Math.abs(qLenSq - 1) > 0.01) {
+      droneQuaternion.normalize(); body.setRotation({ x: droneQuaternion.x, y: droneQuaternion.y, z: droneQuaternion.z, w: droneQuaternion.w }, true);
+    }
     qInv.copy(droneQuaternion).invert();
     up.set(0, 1, 0).applyQuaternion(droneQuaternion);        // drone's local Y in world space
     const auth = build.authority;
@@ -1350,7 +1371,10 @@ async function main() {
       totalVerticalLift,
       fwd.z * totalThrustMagnitude * projFwd + rightVec.z * totalThrustMagnitude * projRight
     );
-    body.addForce(localThrust, true);
+    // Hard guard: never hand Rapier a non-finite force, regardless of which upstream formula
+    // produced it -- this is the last line of defence against the whole class of bug this is.
+    if (finite(localThrust.x, localThrust.y, localThrust.z)) body.addForce(localThrust, true);
+    else logGuardHit('force', `localThrust=(${localThrust.x},${localThrust.y},${localThrust.z}) totalThrustMagnitude=${totalThrustMagnitude} projFwd=${projFwd} projRight=${projRight} pitchAngle=${pitchAngle} rollAngle=${rollAngle}`);
 
     /* --- Desired "up" vector: pitch/roll sticks (spring-centred, up to +-MAX_TILT), plus a
      * horizontal position hold when centred -- altitude is always the pilot's own throttle, so
@@ -1371,6 +1395,12 @@ async function main() {
       if (m > aMax) { ax *= aMax / m; az *= aMax / m; }
       desiredUp.x += ax / G; desiredUp.z += az / G;      // tilt the thrust vector toward the wanted acceleration
     }
+    // Guard before normalize(): dividing a zero-length (or non-finite) vector by its own length
+    // produces NaN directly -- catch it here rather than downstream.
+    if (!finite(desiredUp.x, desiredUp.y, desiredUp.z) || desiredUp.lengthSq() < 1e-8) {
+      logGuardHit('desiredUp', `desiredUp=(${desiredUp.x},${desiredUp.y},${desiredUp.z}) landed=${landed} pitCmd=${pitCmd} rolCmd=${rolCmd} holdValid=${holdValid}`);
+      desiredUp.set(0, 1, 0);
+    }
     desiredUp.normalize();
 
     /* --- Local torque: attitude PD (roll/pitch), rate control (yaw). --- */
@@ -1383,7 +1413,9 @@ async function main() {
       clamp(I.y * KYAW_RATE * (-cmd.yaw * MAX_YAW_RATE - wl.y), -0.4 * lim, 0.4 * lim),          // yaw   (local Y)
       clamp(I.z * (ka * axis.z - kd * wl.z), -lim, lim)                                          // pitch (local Z)
     ).applyQuaternion(droneQuaternion);
-    body.addTorque(tq, true);
+    // Same hard guard as the force above: never hand Rapier a non-finite torque.
+    if (finite(tq.x, tq.y, tq.z)) body.addTorque(tq, true);
+    else logGuardHit('torque', `tq=(${tq.x},${tq.y},${tq.z}) axis=(${axis.x},${axis.y},${axis.z}) wl=(${wl.x},${wl.y},${wl.z}) I=(${I.x},${I.y},${I.z}) lim=${lim}`);
   }
 
   /* =====================================================================
