@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quadcopter Simulation · Map Environment</title>
+<link rel="stylesheet" href="css/simulator.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loadingOverlay">
+  <div class="spinner"></div>
+  <div id="loadingBar"><div id="loadingFill"></div></div>
+  <div id="loadingText">Loading 3D Map Environment...</div>
+  <div id="loadingSub"></div>
+</div>
+<div id="reticle" hidden></div>
+<div id="hud">
+  <div id="pilotTag" style="display:none; font-family:monospace; font-size:11px; color:#8f9bb0; letter-spacing:.04em;"></div>
+  <div id="diagTag" style="display:none; font-family:monospace; font-size:11px; color:#ff6b6b; letter-spacing:.02em; max-width:280px;"></div>
+  <div id="armed"><i></i><span id="armedText">Motors disarmed</span></div>
+  <div id="sticks">
+    <div class="stick"><div class="gimbal"><div class="dot" id="dotL"></div></div><span>Throttle / yaw</span></div>
+    <div class="stick"><div class="gimbal"><div class="dot" id="dotR"></div></div><span>Pitch / roll</span></div>
+  </div>
+  <dl id="telemetry">
+    <dt>Throttle</dt><dd id="tThr">0%</dd>
+    <dt>Altitude (MSL)</dt><dd id="tAltNow">0.0 m</dd>
+    <dt>AGL (ground)</dt><dd id="tAgl">0.0 m</dd>
+    <dt>Throttle lever</dt><dd id="tAlt">0%</dd>
+    <dt>Ground speed</dt><dd id="tSpd">0.0 km/h</dd>
+    <dt>Climb rate</dt><dd id="tVs">0.0 m/s</dd>
+    <dt>Battery</dt><dd id="tBat">100%</dd>
+    <dt>Heading</dt><dd id="tHdg">0°</dd>
+    <dt>Camera</dt><dd id="tCam">Chase</dd>
+    <dt>Input</dt><dd id="tDev">Keyboard Active</dd>
+  </dl>
+  <dl id="telemetry" style="margin-top:6px;">
+    <dt>Gates cleared</dt><dd id="tGates">0</dd>
+    <dt>Crashes</dt><dd id="tCrashes">0</dd>
+  </dl>
+  <div id="buttons">
+    <button id="toggle" type="button">Arm motors</button>
+    <button id="btnCam" type="button">Camera (C)</button>
+    <button id="btnThermal" type="button">Thermal (T)</button>
+    <button id="btnReturn" type="button" style="grid-column:1/-1;">Return to Mission Control</button>
+  </div>
+  <div id="hint">W/S throttle · A/D yaw · arrows pitch and roll · Space arms · Q/E gimbal tilt<br>Gamepad: sticks as RC mode 2, A arms, X thermal, Y camera, D-pad gimbal</div>
+</div>
+<details id="customizer">
+  <summary>Weather</summary>
+  <div id="buildSummary" style="font-family:monospace; font-size:12px; color:#8f9bb0; margin-bottom:10px; line-height:1.5;"></div>
+  <div class="field"><label for="rngWind">Wind speed: <b id="vWind">0 km/h</b></label><input id="rngWind" type="range" min="0" max="40" step="1" value="0"></div>
+  <div class="field"><label for="rngWindDir">Wind from: <b id="vWindDir">0° N</b></label><input id="rngWindDir" type="range" min="0" max="360" step="5" value="0"></div>
+</details>
+<script type="module" src="js/simulator.js"></script>
+</body>
+</html>
