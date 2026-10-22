@@ -1,0 +1,1631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quadcopter Simulation · Map Environment</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #171b22; font-family: system-ui, sans-serif; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; left: max(16px, env(safe-area-inset-left, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; gap: 10px; width: 244px; padding: 12px 14px;
+    background: rgba(20, 24, 32, 0.72); border: 1px solid #333c4b; border-radius: 10px;
+    backdrop-filter: blur(6px); color: #cfd6e2; font-size: 13px; user-select: none;
+  }
+  #armed { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  #armed i { width: 10px; height: 10px; border-radius: 50%; background: #e5484d; }
+  #armed.on i { background: #3ddc84; }
+  #sticks { display: flex; gap: 14px; }
+  .stick { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .stick span, #hint, #telemetry dt { color: #8f9bb0; }
+  .stick span { font-size: 12px; }
+  /* Gimbal: a square with a centre crosshair; the dot shows the stick position */
+  .gimbal { position: relative; width: 96px; height: 96px; box-sizing: border-box;
+            border: 1px solid #4a5568; border-radius: 8px; background: #1b212b; }
+  .gimbal::before, .gimbal::after { content: ""; position: absolute; background: #2f3846; }
+  .gimbal::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .gimbal::after  { top: 50%; left: 0; right: 0; height: 1px; }
+  .dot { position: absolute; left: 50%; top: 50%; z-index: 1; width: 12px; height: 12px;
+         margin: -6px 0 0 -6px; border-radius: 50%; background: #7fb4ff; }
+  #telemetry { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; margin: 0;
+               font-variant-numeric: tabular-nums; }
+  #telemetry dd { margin: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hint { font-size: 11.5px; line-height: 1.45; }
+  #hud button {
+    font: inherit; padding: 8px 14px; border: 1px solid #4a5568; border-radius: 6px;
+    background: #232a36; color: #e8edf5; cursor: pointer;
+  }
+  #hud button:hover { background: #2d3646; }
+  #hud button:focus-visible { outline: 2px solid #7fb4ff; outline-offset: 2px; }
+  #customizer {
+    position: fixed; right: max(16px, env(safe-area-inset-right, 0px));
+    top: calc(16px + env(safe-area-inset-top, 0px)); box-sizing: border-box; width: 272px;
+    max-height: calc(100% - 32px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto; padding: 12px 14px; background: rgba(20, 24, 32, 0.72);
+    border: 1px solid #333c4b; border-radius: 10px; backdrop-filter: blur(6px);
+    color: #cfd6e2; font-size: 13px;
+  }
+  #customizer summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+  #customizer:not([open]) summary { margin-bottom: 0; }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .metric { background: #1b212b; border: 1px solid #2f3846; border-radius: 8px; padding: 8px 10px; }
+  .metric span, .field label, .field small, #mNote { color: #8f9bb0; }
+  .metric span { font-size: 11.5px; }
+  .metric b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .metric b.good { color: #3ddc84; } .metric b.warn { color: #ffc24d; } .metric b.bad { color: #ff6b6b; }
+  #mNote { margin-top: 8px; font-size: 12px; line-height: 1.4; }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+  .field select { font: inherit; padding: 7px 8px; border: 1px solid #4a5568; border-radius: 6px;
+                  background: #232a36; color: #e8edf5; }
+  .field select:focus-visible { outline: 2px solid #7fb4ff; outline-offset: 2px; }
+  .field small { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  #buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  #buttons button { font-size: 12.5px; padding: 7px 8px; }
+  #buttons button.on { border-color: #7fb4ff; background: #2a3a55; }
+  #hud { max-height: calc(100% - 32px); overflow-y: auto; }
+  #reticle { position: fixed; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px;
+             border: 1px solid rgba(255, 255, 255, 0.7); border-radius: 50%; pointer-events: none; }
+  #reticle::before, #reticle::after { content: ""; position: absolute; background: rgba(255, 255, 255, 0.7); }
+  #reticle::before { left: 50%; top: -10px; bottom: -10px; width: 1px; }
+  #reticle::after  { top: 50%; left: -10px; right: -10px; height: 1px; }
+  .field input[type=range] { width: 100%; accent-color: #7fb4ff; margin: 0; }
+  .field label b { color: #e8edf5; font-weight: 600; }
+  @media (max-width: 720px) { #hint { display: none; } }
+  #loadingOverlay {
+    position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center; background: radial-gradient(circle at 50% 40%, #1c2330, #0c0f14);
+    color: #cfe0ff; font-size: 15px; letter-spacing: 0.02em; transition: opacity 0.5s ease;
+  }
+  #loadingOverlay.hidden { opacity: 0; pointer-events: none; }
+  #loadingOverlay .spinner { width: 34px; height: 34px; border-radius: 50%;
+    border: 3px solid rgba(127, 180, 255, 0.25); border-top-color: #7fb4ff; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loadingBar { width: 260px; height: 6px; border-radius: 4px; background: #232a36; overflow: hidden; }
+  #loadingFill { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #7fb4ff);
+    transition: width 0.25s ease; }
+  #loadingSub { font-size: 12px; color: #6f7c92; }
+  @media (prefers-reduced-motion: reduce) { #loadingOverlay .spinner { animation: none; } }
+</style>
+
+<!-- Import map: bare specifiers 'three' and 'three/addons/' resolve to the CDN.
+     OrbitControls itself imports 'three', so it shares one Three.js instance. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loadingOverlay"><div class="spinner"></div><div id="loadingBar"><div id="loadingFill"></div></div>
+  <div id="loadingText">Loading 3D Map Environment...</div><div id="loadingSub"></div></div>
+<div id="reticle" hidden></div>
+<div id="hud">
+  <div id="pilotTag" style="display:none; font-family:monospace; font-size:11px; color:#8f9bb0; letter-spacing:.04em;"></div>
+  <div id="diagTag" style="display:none; font-family:monospace; font-size:11px; color:#ff6b6b; letter-spacing:.02em; max-width:280px;"></div>
+  <div id="armed"><i></i><span id="armedText">Motors disarmed</span></div>
+  <div id="sticks">
+    <div class="stick"><div class="gimbal"><div class="dot" id="dotL"></div></div><span>Throttle / yaw</span></div>
+    <div class="stick"><div class="gimbal"><div class="dot" id="dotR"></div></div><span>Pitch / roll</span></div>
+  </div>
+  <dl id="telemetry">
+    <dt>Throttle</dt><dd id="tThr">0%</dd>
+    <dt>Altitude (MSL)</dt><dd id="tAltNow">0.0 m</dd>
+    <dt>AGL (ground)</dt><dd id="tAgl">0.0 m</dd>
+    <dt>Throttle lever</dt><dd id="tAlt">0%</dd>
+    <dt>Ground speed</dt><dd id="tSpd">0.0 km/h</dd>
+    <dt>Climb rate</dt><dd id="tVs">0.0 m/s</dd>
+    <dt>Battery</dt><dd id="tBat">100%</dd>
+    <dt>Heading</dt><dd id="tHdg">0°</dd>
+    <dt>Camera</dt><dd id="tCam">Chase</dd>
+    <dt>Input</dt><dd id="tDev">Keyboard Active</dd>
+  </dl>
+  <dl id="telemetry" style="margin-top:6px;">
+    <dt>Gates cleared</dt><dd id="tGates">0</dd>
+    <dt>Crashes</dt><dd id="tCrashes">0</dd>
+  </dl>
+  <div id="buttons">
+    <button id="toggle" type="button">Arm motors</button>
+    <button id="btnCam" type="button">Camera (C)</button>
+    <button id="btnThermal" type="button">Thermal (T)</button>
+    <button id="btnReturn" type="button" style="grid-column:1/-1;">Return to Mission Control</button>
+  </div>
+  <div id="hint">W/S throttle · A/D yaw · arrows pitch and roll · Space arms · Q/E gimbal tilt<br>
+    Gamepad: sticks as RC mode 2, A arms, X thermal, Y camera, D-pad gimbal</div>
+</div>
+
+<details id="customizer">
+  <summary>Weather</summary>
+  <div id="buildSummary" style="font-family:monospace; font-size:12px; color:#8f9bb0; margin-bottom:10px; line-height:1.5;"></div>
+  <div class="field"><label for="rngWind">Wind speed: <b id="vWind">0 km/h</b></label>
+    <input id="rngWind" type="range" min="0" max="40" step="1" value="0"></div>
+  <div class="field"><label for="rngWindDir">Wind from: <b id="vWindDir">0° N</b></label>
+    <input id="rngWindDir" type="range" min="0" max="360" step="5" value="0"></div>
+</details>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.12.0/+esm';
+
+/* Global flight flag. Module scope is not global, so it lives on `window`;
+ * type `isFlying = true` in the console to control the drone. */
+window.isFlying = false;
+
+/* ---------- Tunables ---------- */
+const ARM_LENGTH  = 1.3;    // centre -> motor (m)
+const SKID_DROP   = 0.27;   // body centre -> bottom of skids (m)
+const HOVER_Y     = 1.6;    // target hover altitude of the body centre (m)
+const G           = 9.81;
+const MAX_SPIN    = 60;     // rotor visual speed at full throttle (rad/s)
+const FIXED_DT    = 1 / 60; // physics timestep (s)
+const MAX_TILT     = 25 * Math.PI / 180;   // lean angle at full pitch/roll stick (25 deg)
+const MAX_YAW_RATE = 2.2;   // yaw rate at full yaw stick (rad/s)
+const LAND_BAND    = 0.08;  // "on the skids" ground-clearance tolerance (m)
+const DEADZONE     = 0.05;  // radial stick deadzone
+const EXPO         = 0.45;  // 0 = linear, 1 = fully cubic stick curve
+
+/* Spec-engine constants */
+const AIR_DENSITY     = 1.225;  // kg/m^3
+const FIGURE_OF_MERIT = 0.55;   // hover efficiency of small props
+const DISCHARGE_EFF   = 0.85;   // usable fraction of pack energy
+
+/* Component catalogue. Weights in g, cost in USD, prop size in inches.
+ * FRAMES is generated below from the same 5 anchor classes (7/9/11/13/15") the
+ * Mission Control pilot portal uses, so picking "11-inch" here and "11-inch" on
+ * the portal produce the same airframe. thrustKgf is the PROP SIZE'S own max
+ * thrust rating (bigger props move more air), independent of which motor/
+ * battery you pair with it -- that pairing instead changes MASS, so TWR still
+ * depends on your whole build, exactly like a real aircraft. */
+const PROP_ANCHORS = [
+  { in: 7,  cls: 'Racing / micro-long', weight: 320,  thrustKgf: 2.6,  cost: 30 },
+  { in: 9,  cls: 'Sport / freestyle',   weight: 650,  thrustKgf: 3.6,  cost: 45 },
+  { in: 11, cls: 'Long-range',          weight: 1400, thrustKgf: 5.2,  cost: 70 },
+  { in: 13, cls: 'Heavy-lift',          weight: 2600, thrustKgf: 7.8,  cost: 110 },
+  { in: 15, cls: 'Cargo / survey',      weight: 4200, thrustKgf: 11.0, cost: 160 },
+  { in: 17, cls: 'Industrial lift',     weight: 6200, thrustKgf: 14.5, cost: 220 },
+  { in: 20, cls: 'Heavy industrial',    weight: 9000, thrustKgf: 19.5, cost: 310 }
+];
+function buildPropCatalog() {
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const out = [];
+  for (let size = 7; size <= 20; size++) {
+    let a = PROP_ANCHORS[0], b = PROP_ANCHORS[PROP_ANCHORS.length - 1], t = 0;
+    for (let i = 0; i < PROP_ANCHORS.length - 1; i++) {
+      if (size >= PROP_ANCHORS[i].in && size <= PROP_ANCHORS[i + 1].in) {
+        a = PROP_ANCHORS[i]; b = PROP_ANCHORS[i + 1]; t = (size - a.in) / (b.in - a.in); break;
+      }
+    }
+    out.push({
+      name: `${size}" ${t < 0.5 ? a.cls : b.cls}`,
+      sizeIn: size,
+      cost: Math.round(lerp(a.cost, b.cost, t)),
+      weight: Math.round(lerp(a.weight, b.weight, t)),
+      thrustKgf: lerp(a.thrustKgf, b.thrustKgf, t),
+      armScale: size / 10,                        // 10" => 1.0x, matches the original reference scale
+      propR: (size * 0.0254) / 2                  // real prop radius in metres
+    });
+  }
+  return out;
+}
+const FRAMES = buildPropCatalog();
+const MOTORS = [
+  { name: 'Brushed Coreless (Low Efficiency)', cost: 15, weight: 20, eff: 0.45 },
+  { name: 'Micro Brushless (High Efficiency)', cost: 35, weight: 45, eff: 0.72 },
+  { name: 'Long-Range Low-KV Brushless',       cost: 60, weight: 80, eff: 0.82 }
+];
+const BATTERIES = [
+  { name: '1S 500mAh LiPo',           cost: 10, weight: 15,  ah: 0.5,  volts: 3.7 },
+  { name: '2S 550mAh LiPo',           cost: 18, weight: 35,  ah: 0.55, volts: 7.4 },
+  { name: '4S 3000mAh 18650 Li-Ion',  cost: 35, weight: 200, ah: 3.0,  volts: 14.8 }
+];
+const DEFAULT_BUILD = { frame: 3, motor: 1, battery: 1 };   // frame 3 = 10" (index = size - 7), indices into the lists above
+
+/* Tactical-suite tunables */
+const GIMBAL_RATE          = 0.9;   // gimbal tilt speed (rad/s)
+const MANUAL_THROTTLE_RATE = 0.45;  // throttle-lever travel per second at full stick deflection (every mode)
+const BATTERY_TIME_SCALE   = 1;     // >1 drains the pack faster than real time (useful for drills)
+const IDLE_POWER_W         = 1.5;   // avionics draw while armed
+const COLD_HEAT            = 0.02;  // thermal signature of unheated objects
+const VEHICLE_SPEED        = 6;     // patrol vehicle speed (m/s)
+
+/* Absolute-throttle flight model */
+const IDLE_FLOOR  = 0.045;  // AirMode: idle power floor (4.5%) when armed with the throttle lever at 0
+const ARMED_LINEAR_DAMPING = 1.2;   // body linear damping while armed (stable flight); near-zero when disarmed so a fall is gravity-driven
+const IDLE_RPM_VISUAL      = 0.35;  // visual prop speed at idle
+
+/* Map-environment tunables. Leave the two URLs blank to use the built-in procedural
+ * sky dome + heightmap terrain; set them to load a real HDRI / GLTF map instead
+ * (both loaders are already wired up in loadEnvironment() below). */
+const CONFIG = { hdriUrl: '', mapModelUrl: '' };
+const MAP_SIZE      = 400;   // terrain full width/depth (m)
+const MAP_SEGS      = 96;    // terrain grid subdivisions per side
+const MAX_HILL      = 8;     // maximum hill elevation (m) -- hills map only; city map is flat
+const PAD_RADIUS    = 7;     // flat landing-pad clearing around the origin (m), hills map
+const PLAY_RADIUS   = 190;   // boundary wall radius (m)
+const WALL_HEIGHT   = 4;     // boundary wall height (m)
+
+/* Engineering spec engine: mass, cost, TWR and flight time for a build. TWR comes from the
+ * selected PROP SIZE's own thrust rating (bigger props move more air) divided by the build's
+ * actual total mass -- so a 7" racing frame is genuinely twitchier than a 15" cargo frame, and
+ * loading a heavier battery onto the same frame lowers its TWR too, just like a real aircraft. */
+function computeSpecs({ frame, motor, battery }) {
+  const mass = (frame.weight + motor.weight + battery.weight) / 1000;      // kg
+  const cost = frame.cost + motor.cost + battery.cost;                     // USD
+  const twr  = frame.thrustKgf / mass;
+  const energyWh = battery.ah * battery.volts;                             // pack energy
+  // Hover power from actuator-disk momentum theory: P = T^1.5 / sqrt(2 rho A) / (FM * efficiency)
+  const diskArea = 4 * Math.PI * frame.propR ** 2;
+  const hoverW = (mass * G) ** 1.5 / Math.sqrt(2 * AIR_DENSITY * diskArea) / (FIGURE_OF_MERIT * motor.eff);
+  const flightMin = energyWh / hoverW * 60 * DISCHARGE_EFF;
+  return { mass, cost, twr, energyWh, hoverW, hoverThrottle: 1 / twr, flightMin };
+}
+
+/* ------------------------------------------------------------------------
+ * 2D value-noise fbm, used for the terrain heightmap (separate generator
+ * from the 1D wind noise further down, which needs different statistics).
+ * ---------------------------------------------------------------------- */
+const hash2 = (x, y) => { const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return v - Math.floor(v); };
+function noise2(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+function fbm2(x, y) {
+  return noise2(x * 0.018, y * 0.018) * 0.55 + noise2(x * 0.05 + 41, y * 0.05 + 17) * 0.3
+       + noise2(x * 0.13 + 7, y * 0.13 + 91) * 0.15;
+}
+
+/* Loads (or procedurally builds) the sky and terrain, and scatters obstacles,
+ * landing pads and nav gates over it. Returns everything main() needs to wire
+ * up physics colliders and the flight HUD. Drives the loading-overlay progress
+ * bar throughout, since terrain/collider generation is the slow part of startup. */
+async function loadEnvironment(scene, renderer, sun, mapId) {
+  const isCity = mapId === 'city';
+  const overlay = document.getElementById('loadingOverlay');
+  const fill = document.getElementById('loadingFill');
+  const text = document.getElementById('loadingText');
+  const sub = document.getElementById('loadingSub');
+  const setProgress = (pct, label) => {
+    fill.style.width = `${Math.round(pct)}%`;
+    if (label) sub.textContent = label;
+  };
+  const tick = () => new Promise(r => requestAnimationFrame(r));   // yield a frame so the bar actually paints
+
+  const manager = new THREE.LoadingManager();
+  manager.onProgress = (url, loaded, total) => setProgress(10 + 30 * (loaded / Math.max(1, total)), `Fetching ${url.split('/').pop()}`);
+
+  text.textContent = 'Loading 3D Map Environment...';
+  setProgress(2, 'Preparing renderer');
+  await tick();
+
+  /* ---- Sky: a real HDRI if configured, otherwise a gradient sky dome with a sun glow ---- */
+  let sky;
+  setProgress(8, 'Building sky');
+  if (CONFIG.hdriUrl) {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    const hdr = await new RGBELoader(manager).setDataType(THREE.HalfFloatType).loadAsync(CONFIG.hdriUrl);
+    const envMap = pmrem.fromEquirectangular(hdr).texture;
+    scene.background = envMap; scene.environment = envMap;
+    hdr.dispose(); pmrem.dispose();
+  } else {
+    // Procedural gradient dome: horizon -> zenith colour blend, plus a soft glow around the sun direction
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide, depthWrite: false, fog: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(0x3a6fd8) }, uHorizon: { value: new THREE.Color(0xcfe0ee) },
+        uGround: { value: new THREE.Color(0x9fb0bd) }, uSunDir: { value: new THREE.Vector3(0, 1, 0) }
+      },
+      vertexShader: `varying vec3 vDir; void main() { vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec3 vDir; uniform vec3 uTop, uHorizon, uGround; uniform vec3 uSunDir;
+        void main() {
+          float h = vDir.y;
+          vec3 col = h > 0.0 ? mix(uHorizon, uTop, pow(h, 0.55)) : mix(uHorizon, uGround, pow(-h, 0.4));
+          float sun = pow(max(dot(normalize(vDir), normalize(uSunDir)), 0.0), 128.0);
+          float glow = pow(max(dot(normalize(vDir), normalize(uSunDir)), 0.0), 6.0) * 0.25;
+          col += vec3(1.0, 0.92, 0.75) * (sun * 1.4 + glow);
+          gl_FragColor = vec4(col, 1.0);
+        }`
+    });
+    sky = new THREE.Mesh(new THREE.SphereGeometry(MAP_SIZE * 2.4, 24, 16), skyMat);
+    sky.userData.heat = 0.04;      // FLIR: sky reads cold
+    sky.userData.isSky = true;
+    scene.add(sky);
+  }
+  await tick();
+
+  /* ---- Terrain: a GLTF map if configured, otherwise a procedural heightmap ---- */
+  let terrain, terrainHeight, heightData = null, buildings = new THREE.Group(), gltfColliderMeshes = null;
+  setProgress(20, 'Generating heightmap');
+
+  if (CONFIG.mapModelUrl) {
+    const gltf = await new GLTFLoader(manager).loadAsync(CONFIG.mapModelUrl);
+    terrain = gltf.scene;
+    gltfColliderMeshes = [];
+    terrain.traverse(o => {
+      if (o.isMesh) {
+        o.castShadow = o.receiveShadow = true;
+        o.userData.heat = o.userData.heat ?? 0.12;   // buildings/terrain read cold by default under FLIR
+        gltfColliderMeshes.push(o);
+      }
+    });
+    scene.add(terrain);
+    terrainHeight = () => SKID_DROP - 1;   // no analytic height for an arbitrary model; AGL falls back to the raycast sensor
+  } else {
+    const half = MAP_SIZE / 2;
+    const cityPadRadius = 16;
+    terrainHeight = isCity
+      ? (x, z) => (Math.hypot(x, z) < cityPadRadius ? 0.35 : 0)   // flat tarmac, except the raised central pad
+      : (x, z) => {
+          const d = Math.hypot(x, z);
+          const h = (fbm2(x, z) * 0.5 + 0.5) * MAX_HILL;             // remapped to 0..MAX_HILL (hills, never craters)
+          const clear = THREE.MathUtils.smoothstep(d, PAD_RADIUS, PAD_RADIUS + 6);   // flat clearing at the spawn pad
+          return h * clear;
+        };
+
+    const geo = new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE, MAP_SEGS, MAP_SEGS);
+    geo.rotateX(-Math.PI / 2);
+    const posAttr = geo.attributes.position;
+    const colors = new Float32Array(posAttr.count * 3);
+    const low = isCity ? new THREE.Color(0x2b2e33) : new THREE.Color(0x4c6b3a);
+    const mid = isCity ? new THREE.Color(0x33373d) : new THREE.Color(0x6a7a52);
+    const high = isCity ? new THREE.Color(0x3d4148) : new THREE.Color(0x9a9284);
+    const tmpColor = new THREE.Color();
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i), z = posAttr.getZ(i);
+      const h = terrainHeight(x, z);
+      posAttr.setY(i, h);
+      const t = THREE.MathUtils.clamp(h / MAX_HILL, 0, 1);
+      tmpColor.copy(t < 0.5 ? low.clone().lerp(mid, t * 2) : mid.clone().lerp(high, (t - 0.5) * 2));
+      colors[i * 3] = tmpColor.r; colors[i * 3 + 1] = tmpColor.g; colors[i * 3 + 2] = tmpColor.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+    const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
+    terrain = new THREE.Mesh(geo, terrainMat);
+    terrain.receiveShadow = true;
+    terrain.userData.heat = 0.08;   // cold ambient ground under FLIR
+    scene.add(terrain);
+
+    // Rapier heightfield samples, independent of the Three.js vertex order: i (x) fastest, j (z) slowest,
+    // matching Rapier's "heights[i + j*(nrows+1)]" column-major convention.
+    const nrows = MAP_SEGS, ncols = MAP_SEGS;
+    const heights = new Float32Array((nrows + 1) * (ncols + 1));
+    for (let j = 0; j <= ncols; j++) {
+      const z = -half + j * (MAP_SIZE / ncols);
+      for (let i = 0; i <= nrows; i++) {
+        heights[i + j * (nrows + 1)] = terrainHeight(-half + i * (MAP_SIZE / nrows), z);
+      }
+    }
+    heightData = { nrows, ncols, heights, size: MAP_SIZE };
+  }
+  setProgress(45, 'Placing obstacles');
+  await tick();
+
+  /* ---- Procedural buildings: boxes the drone can collide with (walls) and land on (roofs) ---- */
+  const buildingBoxes = [];   // { x, z, hx, hy, hz } for the physics pass in main()
+  function addBuilding(x, z, w, h, d, ry = 0) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.8, metalness: 0.05 });
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    const gy = terrainHeight(x, z);
+    b.position.set(x, gy + h / 2, z);
+    b.rotation.y = ry;
+    b.castShadow = b.receiveShadow = true;
+    b.userData.heat = 0.16;                 // cold structural surface under FLIR
+    buildings.add(b);
+    buildingBoxes.push({ x, y: gy + h / 2, z, hx: w / 2, hy: h / 2, hz: d / 2, ry });
+  }
+  const BUILDING_SPOTS = isCity ? [
+    [55, -45, 14, 22, 14, 0.3],  [-70, -35, 12, 15, 18, -0.4], [85, 40, 16, 32, 16, 0.1],
+    [-80, 50, 13, 48, 13, 0.6],  [0, -90, 20, 18, 14, 0],      [-45, 90, 11, 26, 11, 0.2],
+    [120, -10, 15, 38, 15, -0.2],[-120, -70, 10, 20, 10, 0.5], [40, 110, 13, 44, 13, 0.1],
+    [-30, -120, 12, 16, 12, -0.3],[100, 100, 11, 24, 11, 0.4]
+  ] : [
+    [40, -30, 10, 14, 10, 0.3], [-45, -22, 8, 9, 14, -0.4], [55, 25, 12, 20, 12, 0.1],
+    [-50, 30, 9, 7, 9, 0.6], [0, -55, 16, 11, 9, 0], [-30, 55, 7, 16, 7, 0.2]
+  ];
+  for (const [x, z, w, h, d, ry] of BUILDING_SPOTS) addBuilding(x, z, w, h, d, ry);
+  scene.add(buildings);
+  setProgress(60, 'Marking landing pads');
+  await tick();
+
+  /* ---- Landing pads: illuminated targets, warm under FLIR, one at the spawn point ---- */
+  const landingPads = new THREE.Group();
+  function addPad(x, z, label, yOverride) {
+    const gy = yOverride !== undefined ? yOverride : terrainHeight(x, z);
+    const pad = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.2, 0.15, 32),
+      new THREE.MeshStandardMaterial({ color: 0x1c2836, roughness: 0.6 }));
+    disc.position.y = 0.075; disc.receiveShadow = disc.castShadow = true; disc.userData.heat = 0.55;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(2.7, 0.08, 8, 40),
+      new THREE.MeshStandardMaterial({ color: 0xffb347, emissive: 0xff8c1a, emissiveIntensity: 1.6, roughness: 0.4 }));
+    ring.rotation.x = Math.PI / 2; ring.position.y = 0.16; ring.userData.heat = 0.7;
+    pad.add(disc, ring, new THREE.PointLight(0xffb347, 6, 12, 2));
+    pad.userData.label = label;
+    pad.position.set(x, gy, z);
+    landingPads.add(pad);
+  }
+  if (isCity) {
+    addPad(0, 0, 'Home pad');   // central helipad, on the raised tarmac disc
+    // Rooftop pads on three buildings at different elevations: shortest, median, tallest
+    const byHeight = [...BUILDING_SPOTS].sort((a, b) => a[3] - b[3]);
+    [byHeight[0], byHeight[Math.floor(byHeight.length / 2)], byHeight[byHeight.length - 1]].forEach((s, i) => {
+      addPad(s[0], s[2], 'Rooftop pad ' + (i + 1), s[3]);
+    });
+  } else {
+    addPad(0, 0, 'Home pad');
+    addPad(60, -10, 'Forward pad');
+  }
+  scene.add(landingPads);
+  setProgress(72, 'Placing nav gates');
+  await tick();
+
+  /* ---- Illuminated ring gates: a loop for navigation practice ---- */
+  const gates = new THREE.Group();
+  const GATE_SPOTS = isCity
+    ? [[30, -70, 8], [100, 10, 12], [60, 85, 10], [-50, 100, 9], [-100, -5, 11], [-15, -100, 7]]
+    : [[20, -20, 3], [45, 5, 4.5], [20, 35, 3.5], [-20, 25, 4], [-35, -15, 3]];
+  GATE_SPOTS.forEach(([x, z, y], i) => {
+    const gy = terrainHeight(x, z);
+    const hue = i / GATE_SPOTS.length;
+    const color = new THREE.Color().setHSL(hue, 0.75, 0.55);
+    const gate = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.14, 10, 32),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.35 }));
+    gate.position.set(x, gy + y, z);
+    const next = GATE_SPOTS[(i + 1) % GATE_SPOTS.length];
+    gate.lookAt(next[0], gy + y, next[1]);
+    gate.userData.heat = 0.35;
+    gate.add(new THREE.PointLight(color.getHex(), 4, 9, 2));
+    gates.add(gate);
+  });
+  scene.add(gates);
+  setProgress(85, 'Compiling colliders');
+  await tick();
+
+  setProgress(100, 'Ready');
+  await tick();
+  overlay.classList.add('hidden');
+
+  return { terrainHeight, terrain, buildings, buildingBoxes, landingPads, gates, sky, heightData, gltfColliderMeshes };
+}
+
+/* All setup runs after the WASM physics module has been initialised. */
+async function main() {
+  /* ---- Pre-flight config from the Mission Control portal (?pilot=&map=&props=) ----
+   * Read once, up front, so both the customizer (props -> starting frame) and the
+   * environment loader (map) can use the values before anything else initialises. */
+  const launchParams = new URLSearchParams(window.location.search);
+  const pilotName = (launchParams.get('pilot') || '').trim().slice(0, 16);
+  const requestedMap = (launchParams.get('map') || 'hills').trim().toLowerCase();
+  const requestedProps = parseInt(launchParams.get('props'), 10);   // 7-20, matches FRAMES' sizeIn
+  const MISSION_CONTROL_URL = 'index.html';
+  const returnUrl = launchParams.get('return') || MISSION_CONTROL_URL;
+
+  // "hills" and "city" are real, built environments. Range/kamikaze from the portal aren't
+  // wired up yet, so say so rather than silently ignoring the choice.
+  const BUILT_MAPS = ['hills', 'city'];
+  const pilotTag = document.getElementById('pilotTag');
+  const tagLines = [];
+  if (pilotName) tagLines.push('PILOT: ' + pilotName.toUpperCase());
+  if (requestedMap && !BUILT_MAPS.includes(requestedMap)) tagLines.push(`map "${requestedMap}" not built yet \u2192 flying Highland Hills`);
+  if (tagLines.length) { pilotTag.textContent = tagLines.join(' \u00b7 '); pilotTag.style.display = 'block'; }
+
+  await RAPIER.init();
+
+  /* =====================================================================
+   * Renderer, scene, camera, controls
+   * ===================================================================== */
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;      // photoreal, high-contrast tone curve
+  renderer.toneMappingExposure = 1.05;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0xbfd0e8, 140, MAP_SIZE * 0.72);   // hides the terrain's edge in haze
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
+  camera.position.set(5, 3, 6);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0.9, 0);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 1.5;
+  controls.maxDistance = 60;
+  controls.maxPolarAngle = Math.PI / 2 - 0.02;
+  controls.update();
+
+  /* Lighting (r155+ uses physical light units, hence the * PI to match Phase 1) */
+  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20242c, 0.6 * Math.PI));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.1 * Math.PI);
+  sun.position.set(6, 10, 4);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
+  sun.shadow.bias = -0.0005;
+  scene.add(sun, sun.target);   // target moves with the drone so shadows follow it
+
+  /* =====================================================================
+   * 3D map environment: HDRI/gradient sky, heightmap terrain, obstacles,
+   * landing pads and nav gates. Falls back to fully procedural content
+   * when CONFIG.hdriUrl / CONFIG.mapModelUrl are left blank (the default).
+   * ===================================================================== */
+  const env = await loadEnvironment(scene, renderer, sun, requestedMap);
+  const { terrainHeight, terrain, buildings, landingPads, gates, sky } = env;
+
+  /* =====================================================================
+   * Procedural quadcopter (same visuals as Phase 1)
+   * ===================================================================== */
+  function createQuadcopter(armScale = 1) {
+    const L = ARM_LENGTH * armScale;   // arm length for this frame class
+    const drone = new THREE.Group();
+    const carbon  = new THREE.MeshStandardMaterial({ color: 0x23262d, roughness: 0.55, metalness: 0.3 });
+    const shell   = new THREE.MeshStandardMaterial({ color: 0xe9edf2, roughness: 0.4,  metalness: 0.1 });
+    const metal   = new THREE.MeshStandardMaterial({ color: 0x8a93a0, roughness: 0.3,  metalness: 0.85 });
+    const bladeMt = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.6,  side: THREE.DoubleSide });
+    const lensMt  = new THREE.MeshStandardMaterial({ color: 0x0a0c10, roughness: 0.1,  metalness: 0.9 });
+    // Thermal signature per material: a number, or 'motor' / 'battery' for live temperatures
+    const heatOf = new Map([[carbon, 0.3], [shell, 'battery'], [metal, 'motor'], [bladeMt, 0.2], [lensMt, 0.3]]);
+
+    const mesh = (geo, mat, x = 0, y = 0, z = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.castShadow = m.receiveShadow = true;
+      m.userData.heat = heatOf.get(mat);
+      return m;
+    };
+
+    // Body frame, top shell, camera gimbal (front = +X)
+    drone.add(mesh(new THREE.BoxGeometry(0.7, 0.14, 0.5), carbon));
+    drone.add(mesh(new THREE.BoxGeometry(0.5, 0.12, 0.36), shell, 0, 0.11, 0));
+    drone.add(mesh(new THREE.SphereGeometry(0.09, 20, 16), carbon, 0.36, -0.06, 0));
+    drone.add(mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.05, 16), lensMt, 0.44, -0.06, 0).rotateZ(Math.PI / 2));
+
+    // Landing skids
+    for (const side of [-1, 1]) {
+      drone.add(mesh(new THREE.BoxGeometry(1.0 * armScale, 0.04, 0.04), carbon, 0, -SKID_DROP + 0.02, side * 0.38));
+      for (const end of [-1, 1]) {
+        drone.add(mesh(new THREE.BoxGeometry(0.03, 0.22, 0.03), carbon, end * 0.32 * armScale, -0.15, side * 0.36));
+      }
+    }
+
+    // Arms, motors, LEDs, counter-rotating rotors
+    const rotors = [];
+    [45, 135, 225, 315].map(d => THREE.MathUtils.degToRad(d)).forEach((angle, i) => {
+      const dx = Math.cos(angle), dz = Math.sin(angle);
+      const mx = dx * L, mz = dz * L;
+
+      const arm = mesh(new THREE.BoxGeometry(L, 0.06, 0.11), carbon, mx / 2, 0, mz / 2);
+      arm.rotation.y = -angle;
+      drone.add(arm);
+      drone.add(mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.13, 24), metal, mx, 0.07, mz));
+
+      const led = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 8),
+        new THREE.MeshBasicMaterial({ color: dx > 0 ? 0xff3b3b : 0x3bff7a }));
+      led.position.set(mx, -0.03, mz);
+      drone.add(led);
+
+      const rotor = new THREE.Group();
+      rotor.position.set(mx, 0.16, mz);
+      rotor.add(mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.05, 16), metal));
+      const blade = mesh(new THREE.BoxGeometry(0.95 * armScale, 0.012, 0.09 * Math.sqrt(armScale)), bladeMt);
+      blade.rotation.z = 0.08;
+      rotor.add(blade);
+      rotor.rotation.y = i * 0.7;
+      rotor.userData.direction = i % 2 === 0 ? 1 : -1; // adjacent props counter-rotate
+      drone.add(rotor);
+      rotors.push(rotor);
+    });
+    drone.userData.rotors = rotors;
+    return drone;
+  }
+
+  let drone = createQuadcopter(FRAMES[DEFAULT_BUILD.frame].armScale);   // replaced when the frame changes
+  scene.add(drone);
+
+  /* =====================================================================
+   * Physics world
+   * ===================================================================== */
+  const world = new RAPIER.World({ x: 0, y: -G, z: 0 });
+  world.timestep = FIXED_DT;
+
+  // A generous flat cuboid well below the lowest possible terrain point: a safety net so the
+  // drone can never fall through the world even if a terrain/collider edge case is missed.
+  world.createCollider(
+    RAPIER.ColliderDesc.cuboid(400, 0.5, 400).setTranslation(0, -5, 0).setFriction(0.9).setRestitution(0.1)
+  );
+
+  if (env.heightData) {
+    // Flat ground plane at y = 0, sized to the terrain. A real heightfield (matching the visual
+    // hills exactly) was here before, but its exact column/row convention was never confirmed
+    // against the real Rapier engine, and it turned out to cause the physics state to go
+    // non-finite every frame right after arming -- the drone would freeze at a fixed altitude
+    // and stop responding to any input, because the NaN-safety net was silently resetting it
+    // back to the same pose every single step. This flat collider is simple enough to trust:
+    // the hills still LOOK like hills (the visual terrain mesh is unchanged), the drone just
+    // collides with a level plane rather than the actual slopes for now.
+    const { size } = env.heightData;
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(size / 2, 0.1, size / 2).setTranslation(0, -0.1, 0)
+        .setFriction(0.9).setRestitution(0.1)
+    );
+  } else if (env.gltfColliderMeshes) {
+    // A loaded GLTF map: build a static trimesh collider per mesh so the drone collides with
+    // building roofs, walls and any elevated surface in the model, not just a flat floor.
+    for (const o of env.gltfColliderMeshes) {
+      const g = o.geometry;
+      if (!g || !g.attributes.position) continue;
+      const verts = new Float32Array(g.attributes.position.array);
+      const idx = g.index ? Uint32Array.from(g.index.array) : Uint32Array.from({ length: verts.length / 3 }, (_, i) => i);
+      o.updateWorldMatrix(true, false);
+      const desc = RAPIER.ColliderDesc.trimesh(verts, idx).setFriction(0.9).setRestitution(0.1);
+      desc.setTranslation(o.position.x, o.position.y, o.position.z);
+      desc.setRotation({ x: o.quaternion.x, y: o.quaternion.y, z: o.quaternion.z, w: o.quaternion.w });
+      world.createCollider(desc);
+    }
+  }
+
+  // Boundary wall: a ring of static box colliders around the play area, so pilots can't fly off the map
+  const WALL_SEGS = 24;
+  for (let i = 0; i < WALL_SEGS; i++) {
+    const a = (i / WALL_SEGS) * Math.PI * 2, chord = 2 * PLAY_RADIUS * Math.sin(Math.PI / WALL_SEGS);
+    const x = Math.cos(a) * PLAY_RADIUS, z = Math.sin(a) * PLAY_RADIUS;
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(chord / 2 + 0.3, WALL_HEIGHT / 2, 0.6)
+        .setTranslation(x, WALL_HEIGHT / 2, z).setRotation({ x: 0, y: Math.sin((a + Math.PI / 2) / 2), z: 0, w: Math.cos((a + Math.PI / 2) / 2) })
+        .setFriction(0.6).setRestitution(0.2)
+    );
+  }
+  { // Low-poly visual for the same boundary: a translucent, gently striped cylinder wall
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xff6b4a, transparent: true, opacity: 0.18, side: THREE.DoubleSide, roughness: 0.6 });
+    const wall = new THREE.Mesh(new THREE.CylinderGeometry(PLAY_RADIUS, PLAY_RADIUS, WALL_HEIGHT, 48, 1, true), wallMat);
+    wall.position.y = WALL_HEIGHT / 2;
+    scene.add(wall);
+  }
+
+  // Building colliders: static boxes matching the visual boxes from loadEnvironment, so the
+  // drone collides realistically with roofs and walls instead of clipping through them.
+  for (const b of env.buildingBoxes) {
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(b.hx, b.hy, b.hz)
+        .setTranslation(b.x, b.y, b.z).setRotation({ x: 0, y: Math.sin(b.ry / 2), z: 0, w: Math.cos(b.ry / 2) })
+        .setFriction(0.8).setRestitution(0.1)
+    );
+  }
+
+  // Landing pad colliders: the flat ground collider is a plain slab at y = 0, but each pad's
+  // disc is raised visual geometry (its own group position plus a local 0.075 offset, radius
+  // 3.2, half-height 0.075 -- matching addPad() in loadEnvironment) -- without a matching
+  // collider here the drone rested on the invisible flat floor underneath instead of on the
+  // pad's visible surface, which is exactly why the pads looked hollow.
+  if (landingPads) {
+    for (const pad of landingPads.children) {
+      world.createCollider(
+        RAPIER.ColliderDesc.cylinder(0.075, 3.2)
+          .setTranslation(pad.position.x, pad.position.y + 0.075, pad.position.z)
+          .setFriction(0.8).setRestitution(0.1)
+      );
+    }
+  }
+
+  // Dynamic rigid body for the drone, starting just above the ground
+  const body = world.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(0, SKID_DROP + 0.01, 0)
+      .setLinearDamping(ARMED_LINEAR_DAMPING)   // air drag: keeps translation from running away
+      .setAngularDamping(2.5)  // keeps the airframe from spinning/wobbling
+  );
+
+  /* =====================================================================
+   * Shared state (declared before the build code below runs)
+   * ===================================================================== */
+  const clamp = THREE.MathUtils.clamp;
+  const wind = { speed: 0, dir: 0 };      // km/h, and the compass bearing the wind blows FROM
+  let manualThrottle = 0, holdValid = false;
+  let missionGates = 0, missionCrashes = 0, prevSpeed = 0;
+  const clearedGates = new Set();
+  const IMPACT_DROP_MPS = 4.5;   // a sudden speed loss bigger than this, in one physics step, counts as an impact
+  const hold = new THREE.Vector2(), posInt = new THREE.Vector2();
+  let batteryUsedWh = 0, drawW = 0, simTime = 0;
+  let landed = false, rotorRpm = 0;   // ground/idle state
+
+  /* ---- NaN protection ---- */
+  const finite = (...xs) => xs.every(Number.isFinite);
+  let resetCount = 0;
+  function resetDrone() {          // put the rigid body back at a known-good hover pose with zero motion
+    body.setTranslation({ x: 0, y: HOVER_Y, z: 0 }, true);
+    body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);   // a NaN quaternion would survive a position-only reset
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    holdValid = false; posInt.set(0, 0); manualThrottle = 0; prevSpeed = 0;
+  }
+  const guardHitCounts = {};
+  function logGuardHit(name, detail) {
+    const n = (guardHitCounts[name] = (guardHitCounts[name] || 0) + 1);
+    if (n <= 20 || n % 60 === 0) {   // dense at first (catches the very first occurrence), then throttled
+      console.warn(`[drone-sim] GUARD "${name}" caught a non-finite value (hit #${n}). ${detail}`);
+      const diagTag = document.getElementById('diagTag');
+      if (diagTag) { diagTag.textContent = `GUARD: ${name} #${n} \u00b7 ${detail}`; diagTag.style.display = 'block'; }
+    }
+  }
+  function sanitizeBody() {        // call before applying forces and before copying the pose to Three.js
+    const pos = body.translation(), r = body.rotation(), lv = body.linvel(), av = body.angvel();
+    const ok = finite(pos.x, pos.y, pos.z, r.x, r.y, r.z, r.w, lv.x, lv.y, lv.z, av.x, av.y, av.z)
+               && r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w > 0.5;
+    if (!ok) {
+      // Diagnostic build: name exactly which field broke and print the full pre-reset state, roughly
+      // once a second (every 60th hit) rather than only 3 times ever -- if this is firing continuously,
+      // F12 -> Console will now show precisely what's going non-finite instead of a generic warning.
+      if (resetCount % 60 === 0) {
+        const bad = Object.entries({ 'pos.x': pos.x, 'pos.y': pos.y, 'pos.z': pos.z, 'rot.x': r.x, 'rot.y': r.y,
+          'rot.z': r.z, 'rot.w': r.w, 'vel.x': lv.x, 'vel.y': lv.y, 'vel.z': lv.z, 'angvel.x': av.x, 'angvel.y': av.y, 'angvel.z': av.z })
+          .filter(([, v]) => !Number.isFinite(v)).map(([k]) => k);
+        const badList = bad.length ? bad.join(', ') : 'quaternion near-zero';
+        console.warn(`[drone-sim] Rigid body state invalid (hit #${resetCount}). Non-finite: ${badList}.`,
+          { pos: { ...pos }, rot: { ...r }, vel: { ...lv }, angvel: { ...av }, build, manualThrottle, spin });
+        const diagTag = document.getElementById('diagTag');
+        if (diagTag) {
+          diagTag.textContent = `DIAG: reset #${resetCount} \u00b7 bad: ${badList} \u00b7 mass=${build.mass.toFixed(2)} thrust=${build.maxThrust.toFixed(1)} throttle=${manualThrottle.toFixed(2)} spin=${spin.toFixed(2)}`;
+          diagTag.style.display = 'block';
+        }
+      }
+      resetCount++;
+      resetDrone();
+    }
+  }
+  function sanitizeState() {       // controller / telemetry state that could carry a NaN forward
+    if (!Number.isFinite(spin)) spin = 0;
+    if (!Number.isFinite(manualThrottle)) manualThrottle = 0;
+    if (!Number.isFinite(batteryUsedWh)) batteryUsedWh = 0;
+    if (!Number.isFinite(drawW)) drawW = 0;
+    if (!Number.isFinite(thrustPct)) thrustPct = 0;
+    if (!Number.isFinite(simTime)) simTime = 0;
+    if (!Number.isFinite(gimbalPitch)) gimbalPitch = -0.6;
+    if (!finite(hold.x, hold.y, posInt.x, posInt.y)) { hold.set(0, 0); posInt.set(0, 0); holdValid = false; }
+    if (!finite(ou.x, ou.y, ou.z)) ou.set(0, 0, 0);
+  }
+
+  /* =====================================================================
+   * Build customizer: spec engine -> 3D mesh + rigid-body synchronisation
+   * ===================================================================== */
+  const byId = id => document.getElementById(id);
+  const colliders = [];
+  let visualScale = FRAMES[DEFAULT_BUILD.frame].armScale;
+  let build = null;   // derived numbers the flight controller reads (mass, thrust, inertia, ...)
+
+  function applyBuild(sel) {
+    const specs = computeSpecs(sel);
+    const { frame, motor, battery } = sel;
+    const S = frame.armScale, armLen = ARM_LENGTH * S;
+
+    // 1. Visuals: rebuild the airframe at the new scale (arms, props, skids)
+    if (visualScale !== S) {
+      scene.remove(drone);
+      drone.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+      drone = createQuadcopter(S);
+      scene.add(drone);
+      visualScale = S;
+    }
+
+    // 2. Physics: rebuild colliders with per-part masses (kg) so the body's mass and
+    //    inertia follow the build. Battery + 40% of the frame sit in the body block,
+    //    10% of the frame in each skid, and each motor carries 1/4 of the motor weight
+    //    plus 10% of the frame (its arm).
+    const fm = frame.weight / 1000, mm = motor.weight / 1000, bm = battery.weight / 1000;
+    const skidY = -SKID_DROP + 0.02;
+    const parts = [
+      { desc: RAPIER.ColliderDesc.cuboid(0.35, 0.07, 0.25), mass: bm + 0.4 * fm, pos: [0, 0, 0] },
+      ...[-1, 1].map(sd => ({
+        desc: RAPIER.ColliderDesc.cuboid(0.5 * S, 0.02, 0.02).setTranslation(0, skidY, sd * 0.38),
+        mass: 0.1 * fm, pos: [0, skidY, sd * 0.38] })),
+      ...[45, 135, 225, 315].map(d => {
+        const a = THREE.MathUtils.degToRad(d), x = Math.cos(a) * armLen, z = Math.sin(a) * armLen;
+        return { desc: RAPIER.ColliderDesc.ball(0.12).setTranslation(x, 0.07, z),
+                 mass: mm / 4 + 0.1 * fm, pos: [x, 0.07, z] };
+      })
+    ];
+    colliders.forEach(c => world.removeCollider(c, true));
+    colliders.length = 0;
+    let Ix = 0, Iy = 0, Iz = 0;   // approximate principal inertia (point masses), for gain scheduling
+    for (const { desc, mass, pos: [x, y, z] } of parts) {
+      colliders.push(world.createCollider(desc.setMass(mass).setFriction(0.8).setRestitution(0.1), body));
+      Ix += mass * (y * y + z * z); Iy += mass * (x * x + z * z); Iz += mass * (x * x + y * y);
+    }
+    const mb = parts[0].mass;     // plus the body block's own box inertia (0.7 x 0.14 x 0.5 m)
+    Ix += mb * (0.14 ** 2 + 0.5 ** 2) / 12; Iy += mb * (0.7 ** 2 + 0.5 ** 2) / 12; Iz += mb * (0.7 ** 2 + 0.14 ** 2) / 12;
+    body.wakeUp();
+
+    // 3. Controller data. maxThrust is the PROP SIZE's own fixed thrust rating (see FRAMES) --
+    //    it does not rescale with mass, so pairing a bigger prop size with a heavier battery
+    //    genuinely lowers that build's TWR, same as computeSpecs() above. Torque is still capped
+    //    by arm length as before.
+    const maxThrust = frame.thrustKgf * G;                       // N; MaxThrust = prop size's thrust rating * g
+    build = {
+      mass: specs.mass, twr: specs.twr, maxThrust, inertia: { x: Ix, y: Iy, z: Iz },
+      hoverW: specs.hoverW, usableWh: specs.energyWh * DISCHARGE_EFF, cdA: 0.012 * S * S,   // cdA: drag area for wind
+      authority: clamp((specs.twr - 1) / 3, 0.35, 1),
+      tiltLimit: specs.twr * 0.85 > 1 ? Math.min(MAX_TILT, Math.acos(1 / (specs.twr * 0.85))) : 0,
+      torqueLimit: 0.35 * maxThrust * 0.707 * armLen
+    };
+    batteryUsedWh = 0;   // a fresh pack goes in with every build change
+    renderSpecs(sel, specs);
+  }
+
+  /* Compact, read-only build readout -- there is no in-sim customizer any more.
+   * Frame (prop size) and the motor/battery preset are both chosen on the Mission
+   * Control portal and arrive here as ?props= and ?type=; see DRONE_TYPES below. */
+  function renderSpecs(sel, s) {
+    const { frame: f, motor: m, battery: b } = sel;
+    const twrNote = s.twr < 1 ? ' -- cannot lift off' : '';
+    byId('buildSummary').innerHTML =
+      `${f.sizeIn}" ${f.name.replace(/^\d+" /, '')} &middot; ${s.mass.toFixed(2)} kg<br>` +
+      `${m.name} &middot; ${b.name}<br>` +
+      `TWR ${s.twr.toFixed(1)}${twrNote} &middot; ${s.twr < 1 ? 'n/a' : s.flightMin.toFixed(1) + ' min'}<br>` +
+      (typePreset.hoverAssist
+        ? `<b>${typePreset.label}</b>: throttle stick = climb rate (centred holds hover, max 3 m/s)`
+        : `<b>${typePreset.label}</b>: throttle stick = raw power (manual)`);
+  }
+
+  // The drone TYPE picked on the portal selects a motor/battery preset; it is not
+  // chosen separately in the simulator. Prop size (?props=) picks FRAMES directly.
+  const DRONE_TYPES = {
+    // tiltMult/yawMult scale how far the airframe is ALLOWED to lean/turn (gentler for commercial);
+    // throttleRateMult slows how fast the throttle lever itself can move (smoother power delivery);
+    // hoverAssist turns on auto-hover: releasing the stick cancels vertical drift instead of needing
+    // constant manual throttle, the way a real GPS/barometer-assisted commercial drone behaves.
+    commercial: { motor: 1, battery: 2, label: 'Commercial',    tiltMult: 0.55, yawMult: 0.5, throttleRateMult: 0.6, hoverAssist: true  },
+    fpv:        { motor: 1, battery: 1, label: 'FPV Freestyle', tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false },
+    racing:     { motor: 2, battery: 0, label: 'Racing FPV',    tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false },
+    kamikaze:   { motor: 2, battery: 0, label: 'FPV Kamikaze',  tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false }
+  };
+  const requestedType = (launchParams.get('type') || 'fpv').trim().toLowerCase();
+  const typePreset = DRONE_TYPES[requestedType] || DRONE_TYPES.fpv;
+
+  if (Number.isFinite(requestedProps)) {
+    const matchIdx = FRAMES.findIndex(f => f.sizeIn === Math.max(7, Math.min(20, requestedProps)));
+    if (matchIdx >= 0) DEFAULT_BUILD.frame = matchIdx;
+  }
+  DEFAULT_BUILD.motor = typePreset.motor;
+  DEFAULT_BUILD.battery = typePreset.battery;
+
+  applyBuild({ frame: FRAMES[DEFAULT_BUILD.frame], motor: MOTORS[DEFAULT_BUILD.motor], battery: BATTERIES[DEFAULT_BUILD.battery] });
+  if (window.innerWidth < 720) byId('customizer').open = false;
+
+  /* =====================================================================
+   * Tactical suite: ground targets, wind engine, cameras, FLIR thermal
+   * ===================================================================== */
+  const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const Y_AXIS = new THREE.Vector3(0, 1, 0), X_AXIS = new THREE.Vector3(1, 0, 0);
+
+  /* ---- Ground surveillance targets; userData.heat drives the thermal shader ---- */
+  const targets = new THREE.Group();
+  scene.add(targets);
+  function addPart(parent, geo, color, heat, x, y, z) {
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.7 }));
+    m.position.set(x, y, z);
+    m.castShadow = m.receiveShadow = true;
+    m.userData.heat = heat;
+    parent.add(m);
+    return m;
+  }
+  const vehicle = new THREE.Group();
+  vehicle.userData.target = 'vehicle';
+  addPart(vehicle, new THREE.BoxGeometry(4.2, 0.7, 1.8), 0x5b6470, 0.55, 0, 0.65, 0);        // hull
+  addPart(vehicle, new THREE.BoxGeometry(2.0, 0.6, 1.6), 0x3b4350, 0.45, -0.3, 1.3, 0);      // cabin
+  addPart(vehicle, new THREE.BoxGeometry(1.2, 0.12, 1.4), 0x2a2d33, 1.0, 1.35, 1.04, 0);     // hot engine bay
+  for (const wx of [-1.3, 1.3]) for (const wz of [-0.95, 0.95]) {
+    addPart(vehicle, new THREE.CylinderGeometry(0.35, 0.35, 0.25, 16), 0x15171a, 0.4, wx, 0.35, wz).rotation.x = Math.PI / 2;
+  }
+  vehicle.position.set(24, 0, -16);
+  vehicle.rotation.y = -Math.PI / 2;                                                         // facing +Z
+  targets.add(vehicle);
+  for (const [hx, hz] of [[-8, -10], [10, 7]]) {                                             // stationary people
+    const person = new THREE.Group();
+    person.userData.target = 'person';
+    addPart(person, new THREE.CapsuleGeometry(0.25, 1.2, 4, 12), 0xc8a27a, 0.78, 0, 0.85, 0);
+    person.position.set(hx, 0, hz);
+    targets.add(person);
+  }
+  const PATROL = [[24, -16], [24, 16], [-24, 16], [-24, -16]];   // rectangular perimeter loop
+  let patrolIdx = 1;
+  function updateTargets(dt) {
+    const [wx, wz] = PATROL[patrolIdx];
+    const dx = wx - vehicle.position.x, dz = wz - vehicle.position.z;
+    if (Math.hypot(dx, dz) < 4) { patrolIdx = (patrolIdx + 1) % PATROL.length; return; }
+    let d = Math.atan2(-dz, dx) - vehicle.rotation.y;            // steer toward the waypoint
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    vehicle.rotation.y += d * (1 - Math.exp(-3 * dt));
+    vehicle.position.x += Math.cos(vehicle.rotation.y) * VEHICLE_SPEED * dt;
+    vehicle.position.z -= Math.sin(vehicle.rotation.y) * VEHICLE_SPEED * dt;
+  }
+
+  /* ---- Wind + turbulence: relative-airspeed drag, Perlin-style noise, Gaussian noise, gust impulses ---- */
+  const hash1 = n => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+  const noise1 = x => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return (hash1(i) * (1 - u) + hash1(i + 1) * u) * 2 - 1; };
+  const fbm = x => noise1(x) * 0.6 + noise1(x * 2.3 + 17) * 0.3 + noise1(x * 5.1 + 41) * 0.1;
+  const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+  const windVec = new THREE.Vector3(), vAir = new THREE.Vector3(), fWind = new THREE.Vector3();
+  const ou = new THREE.Vector3();   // smoothed Gaussian (Ornstein-Uhlenbeck) air-speed noise
+  let nextGust = 2;
+
+  function applyWind() {
+    if (wind.speed <= 0) return;
+    const ms = wind.speed / 3.6, t = simTime, A = THREE.MathUtils.degToRad(wind.dir);
+    windVec.set(-Math.sin(A), 0, Math.cos(A)).multiplyScalar(ms * (1 + 0.4 * fbm(t * 0.3)));   // blowing TOWARD (from + 180 deg)
+    const k = 0.3 * ms, a = FIXED_DT / 0.4, sg = 0.12 * ms * Math.sqrt(2 * a);
+    ou.set(ou.x - ou.x * a + sg * gauss(), ou.y - ou.y * a + 0.4 * sg * gauss(), ou.z - ou.z * a + sg * gauss());
+    vAir.set(windVec.x + k * fbm(t * 0.9 + 3.1) + ou.x,
+             0.4 * k * fbm(t * 1.1 + 11.7) + ou.y,
+             windVec.z + k * fbm(t * 0.8 + 23.9) + ou.z);
+    const v = body.linvel();
+    fWind.set(vAir.x - v.x, vAir.y - v.y, vAir.z - v.z);
+    fWind.multiplyScalar(0.5 * AIR_DENSITY * build.cdA * fWind.length());                     // 0.5 rho CdA |v| v
+    body.addForce(fWind, true);
+
+    if (t >= nextGust) {                                                                       // random gust impulse
+      nextGust = t + 1.5 + Math.random() * 3.5;
+      const dv = ms * (0.08 + 0.17 * Math.random()), lat = 0.4 * dv * gauss(), m = build.mass;
+      const ux = -Math.sin(A), uz = Math.cos(A);
+      body.applyImpulse({ x: m * (dv * ux + lat * uz), y: m * 0.2 * dv * gauss(), z: m * (dv * uz - lat * ux) }, true);
+      const dw = 0.5 * ms / 11, I = build.inertia;
+      body.applyTorqueImpulse({ x: I.x * (Math.random() - 0.5) * dw, y: I.y * (Math.random() - 0.5) * dw * 0.5,
+                                z: I.z * (Math.random() - 0.5) * dw }, true);
+    }
+  }
+  const rngWind = byId('rngWind'), rngDir = byId('rngWindDir');
+  function updateWindUI() {
+    wind.speed = +rngWind.value; wind.dir = +rngDir.value;
+    byId('vWind').textContent = `${wind.speed} km/h`;
+    byId('vWindDir').textContent = `${wind.dir}° ${COMPASS[Math.round(wind.dir / 45) % 8]}`;
+  }
+  for (const r of [rngWind, rngDir]) { r.addEventListener('input', updateWindUI); r.addEventListener('change', () => r.blur()); }
+  updateWindUI();
+
+  /* ---- Cameras: 0 chase, 1 FPV nose, 2 gimbal recon ---- */
+  const CAM_NAMES = ['Chase', 'FPV nose', 'Gimbal recon'];
+  const CAM_FOV = [50, 100, 40];
+  let camMode = 0, gimbalPitch = -0.6, userOrbiting = false;
+  const FPV_ROT  = new THREE.Quaternion().setFromAxisAngle(Y_AXIS, -Math.PI / 2);   // camera -Z -> drone +X
+  const FPV_TILT = new THREE.Quaternion().setFromAxisAngle(X_AXIS, 0.26);            // ~15 deg uptilt, as on FPV quads
+  const camV = new THREE.Vector3(), camD = new THREE.Vector3(), camF = new THREE.Vector3();
+  controls.addEventListener('start', () => { userOrbiting = true; });
+  controls.addEventListener('end', () => { userOrbiting = false; });
+
+  function droneHeading() {   // yaw of the drone: forward = (cos h, 0, -sin h)
+    camF.set(1, 0, 0).applyQuaternion(drone.quaternion);
+    const h = Math.atan2(-camF.z, camF.x);
+    return Number.isFinite(h) ? h : 0;
+  }
+  const headQ = new THREE.Quaternion();
+  function compassHeading() {   // degrees: 0 = north (-Z), 90 = east (+X); from the forward vector, so no Euler flips
+    const r = body.rotation();
+    headQ.set(r.x, r.y, r.z, r.w);
+    if (!finite(headQ.x, headQ.y, headQ.z, headQ.w) || headQ.lengthSq() < 1e-6) return 0;
+    camF.set(1, 0, 0).applyQuaternion(headQ.normalize());
+    const deg = THREE.MathUtils.radToDeg(Math.atan2(camF.x, -camF.z));
+    return Number.isFinite(deg) ? (deg + 360) % 360 : 0;
+  }
+  function placeChase() {
+    const h = droneHeading();
+    camera.rotation.order = 'XYZ';
+    controls.target.copy(drone.position); controls.target.y += 0.4;
+    camera.position.set(drone.position.x - Math.cos(h) * 6, drone.position.y + 2.5, drone.position.z + Math.sin(h) * 6);
+    controls.update();
+  }
+  function cycleCamera() {
+    camMode = (camMode + 1) % 3;
+    camera.fov = CAM_FOV[camMode];
+    camera.updateProjectionMatrix();
+    controls.enabled = camMode === 0;
+    byId('reticle').hidden = camMode !== 2;
+    if (camMode === 0) placeChase();
+  }
+  function updateCamera(dt) {
+    if (!finite(camera.position.x, camera.position.y, camera.position.z, controls.target.x, controls.target.y, controls.target.z)) {
+      camera.position.set(5, 3, 6); controls.target.set(0, 0.9, 0);   // camera / orbit state was corrupted
+    }
+    if (camMode === 0) {
+      // Follow the drone (keeps the user's orbit offset) and ease around to sit behind its heading
+      camV.copy(drone.position); camV.y += 0.4;
+      camD.subVectors(camV, controls.target); camera.position.add(camD); controls.target.copy(camV);
+      if (!userOrbiting) {
+        camD.subVectors(camera.position, controls.target);
+        const h = droneHeading();
+        let d = Math.atan2(Math.sin(h), -Math.cos(h)) - Math.atan2(camD.z, camD.x);
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        camD.applyAxisAngle(Y_AXIS, -d * (1 - Math.exp(-1.5 * dt)));
+        camera.position.copy(controls.target).add(camD);
+      }
+      controls.update();
+    } else if (camMode === 1) {
+      // Mounted inside the nose camera housing; rolls and pitches with the airframe
+      camera.position.set(0.44, -0.06, 0).applyQuaternion(drone.quaternion).add(drone.position);
+      camera.quaternion.copy(drone.quaternion).multiply(FPV_ROT).multiply(FPV_TILT);
+    } else {
+      // Under-slung gimbal: stabilised (no roll/pitch from the airframe), yaw follows heading, tilt is pilot-controlled
+      camera.position.set(0.15, -0.14, 0).applyQuaternion(drone.quaternion).add(drone.position);
+      camera.rotation.set(gimbalPitch, droneHeading() - Math.PI / 2, 0, 'YXZ');
+    }
+  }
+
+  /* ---- Ground-distance sensor: raycasts straight down from the drone to the terrain/obstacles
+   * below it, giving a true above-ground-level reading (and a visual beam) instead of just y - 0.
+   * The flight controller itself uses the cheaper analytic terrainHeight() every physics substep;
+   * this raycast (once per rendered frame) is what actually hits building roofs too, and is what
+   * the HUD's AGL figure and the on-screen beam are drawn from. ---- */
+  const downRay = new THREE.Raycaster();
+  const sensorTargets = [terrain, buildings, landingPads].filter(Boolean);
+  const beamGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  const beam = new THREE.Line(beamGeo, new THREE.LineBasicMaterial({ color: 0x7fe8ff, transparent: true, opacity: 0.55 }));
+  beam.frustumCulled = false;
+  scene.add(beam);
+  let aglReading = 0;
+  const rayOrigin = new THREE.Vector3(), rayDown = new THREE.Vector3(0, -1, 0);
+
+  function updateGroundSensor() {
+    const p = drone.position;
+    rayOrigin.set(p.x, p.y + 0.2, p.z);
+    downRay.set(rayOrigin, rayDown);
+    downRay.far = 300;
+    const hits = sensorTargets.length ? downRay.intersectObjects(sensorTargets, true) : [];
+    const hitY = hits.length ? hits[0].point.y : terrainHeight(p.x, p.z);
+    aglReading = Math.max(0, p.y - hitY);
+    beamGeo.attributes.position.setXYZ(0, p.x, p.y, p.z);
+    beamGeo.attributes.position.setXYZ(1, p.x, hitY, p.z);
+    beamGeo.attributes.position.needsUpdate = true;
+    beam.visible = camMode !== 0;   // only draw the beam in FPV / gimbal views, to avoid clutter in chase cam
+  }
+
+  /* ---- FLIR thermal: heat pass (per-object signature) + ironbow palette pass ---- */
+  let thermalOn = false;
+  const temps = { motor: 0.22, battery: 0.28 };   // live temperatures for tagged drone parts
+  const heatMats = new Map();
+  const heatMat = h => {
+    const k = Math.round(h * 64);
+    if (!heatMats.has(k)) heatMats.set(k, new THREE.MeshBasicMaterial({ color: new THREE.Color().setScalar(k / 64), toneMapped: false }));
+    return heatMats.get(k);
+  };
+  const heatOfMesh = o => { const h = o.userData.heat; return typeof h === 'string' ? temps[h] : (h === undefined ? COLD_HEAT : h); };
+
+  const heatRT = new THREE.WebGLRenderTarget(1, 1, { samples: 4 });
+  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+  composer.addPass(new RenderPass(scene, camera));
+  const thermalPass = new ShaderPass({
+    uniforms: { tDiffuse: { value: null }, tHeat: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 } },
+    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform sampler2D tDiffuse, tHeat;
+      uniform vec2 uRes;
+      uniform float uTime;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      vec3 ironbow(float t) {                       // black -> navy -> purple -> orange -> yellow -> white
+        vec3 c = mix(vec3(0.0, 0.0, 0.03), vec3(0.06, 0.04, 0.38), smoothstep(0.0, 0.22, t));
+        c = mix(c, vec3(0.55, 0.06, 0.52), smoothstep(0.22, 0.42, t));
+        c = mix(c, vec3(0.96, 0.30, 0.04), smoothstep(0.42, 0.62, t));
+        c = mix(c, vec3(1.00, 0.86, 0.12), smoothstep(0.62, 0.82, t));
+        return mix(c, vec3(1.0), smoothstep(0.82, 1.0, t));
+      }
+      void main() {
+        float heat = texture2D(tHeat, vUv).r;                                   // per-object thermal signature
+        float lum  = dot(texture2D(tDiffuse, vUv).rgb, vec3(0.299, 0.587, 0.114)); // lit scene adds faint surface detail
+        float t = 0.08 + heat * 0.8 + lum * 0.15;                               // cold scene sits in dark blue
+        t += (hash(vUv * uRes + fract(uTime)) - 0.5) * 0.035;                   // sensor noise
+        float vig = 1.0 - 0.35 * smoothstep(0.35, 0.85, length(vUv - 0.5));
+        gl_FragColor = vec4(ironbow(clamp(t, 0.0, 1.0)) * vig, 1.0);
+      }`
+  });
+  composer.addPass(thermalPass);
+
+  function resizeThermal() {
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(window.innerWidth, window.innerHeight);
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    heatRT.setSize(size.x, size.y);
+    thermalPass.uniforms.uRes.value.copy(size);
+  }
+  resizeThermal();
+
+  function updateThermalTemps(dt) {   // motors and battery warm up under load and cool down when disarmed
+    const armed = !!window.isFlying;
+    const motorT = armed ? 0.5 + 0.5 * clamp(thrustPct / 45, 0, 1) : 0.22;
+    const batT = armed ? 0.4 + 0.45 * clamp(drawW / (build.hoverW * 2), 0, 1) : 0.28;
+    const k = 1 - Math.exp(-0.35 * dt);
+    temps.motor += (motorT - temps.motor) * k;
+    temps.battery += (batT - temps.battery) * k;
+  }
+  function renderThermal() {
+    // 1) heat pass: every mesh becomes a flat grey level = its thermal signature. Terrain and
+    // buildings carry a cold ambient tag, the sky reads near-black, and pads/gates/motors/
+    // battery are tagged warm-to-hot, so no per-object exclusion list is needed any more.
+    const swapped = [];
+    scene.traverse(o => { if (o.isMesh) { swapped.push(o, o.material); o.material = heatMat(heatOfMesh(o)); } });
+    const bg = scene.background; scene.background = null;
+    renderer.shadowMap.autoUpdate = false;
+    try {
+      renderer.setRenderTarget(heatRT);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear();
+      renderer.render(scene, camera);
+    } finally {
+      renderer.setRenderTarget(null);
+      renderer.shadowMap.autoUpdate = true;
+      scene.background = bg;
+      for (let i = 0; i < swapped.length; i += 2) swapped[i].material = swapped[i + 1];
+    }
+    // 2) normal scene render + palette pass
+    thermalPass.uniforms.tHeat.value = heatRT.texture;
+    thermalPass.uniforms.uTime.value = performance.now() / 1000;
+    composer.render();
+  }
+  const toggleThermal = () => { thermalOn = !thermalOn; };
+  const renderFrame = () => { thermalOn ? renderThermal() : renderer.render(scene, camera); };
+
+
+  /* =====================================================================
+   * Pilot input: keyboard + Gamepad API, RC Mode 2 layout
+   *   Left stick / W,S,A,D      -> throttle (Y), yaw (X)
+   *   Right stick / arrow keys  -> pitch (Y), roll (X)
+   *   Space / gamepad button 0  -> arm / disarm
+   * ===================================================================== */
+  const keys = new Set();
+  const kb    = { thr: 0, yaw: 0, pit: 0, rol: 0 };  // smoothed keyboard "stick"
+  const input = { thr: 0, yaw: 0, pit: 0, rol: 0 };  // combined stick positions, -1..1
+  const cmd   = { thr: 0, yaw: 0, pit: 0, rol: 0 };  // after the expo curve (what the flight code uses)
+  let lastDevice = 'keyboard', padName = '', prevArmBtn = false, gimbalPad = 0;
+  const padPrev = {};
+
+  const axisKey = (neg, pos) => (keys.has(pos) ? 1 : 0) - (keys.has(neg) ? 1 : 0);
+  // Digital keys ease toward +-1 (and back to 0) so they feel like an analog stick
+  const slew = (cur, tgt, dt) => { const r = (tgt === 0 ? 8 : 5) * dt; return cur + clamp(tgt - cur, -r, r); };
+  // Radial deadzone: ignore tiny deflections, then rescale so full deflection still reaches 1
+  const radial = (x, y) => {
+    const m = Math.hypot(x, y);
+    if (m < DEADZONE) return [0, 0];
+    const k = (Math.min(m, 1) - DEADZONE) / (1 - DEADZONE) / m;
+    return [x * k, y * k];
+  };
+  // Exponential stick curve: soft around centre, full authority at the ends
+  const expo = v => Math.sign(v) * (EXPO * Math.abs(v) ** 3 + (1 - EXPO) * Math.abs(v));
+
+  const toggleArm = () => { window.isFlying = !window.isFlying; };
+
+  const CONTROL_KEYS = new Set(['KeyW', 'KeyS', 'KeyA', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE']);
+  window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;   // let dropdowns use their own keys
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!e.repeat) { toggleArm(); lastDevice = 'keyboard'; }
+    } else if (!e.repeat && e.code === 'KeyC') { cycleCamera();
+    } else if (!e.repeat && e.code === 'KeyT') { toggleThermal();
+    } else if (CONTROL_KEYS.has(e.code)) {
+      e.preventDefault();               // stop arrow keys scrolling the page
+      keys.add(e.code); lastDevice = 'keyboard';
+    }
+  });
+  window.addEventListener('keyup', e => { if (e.code === 'Space') e.preventDefault(); keys.delete(e.code); });
+  window.addEventListener('blur', () => keys.clear());
+  window.addEventListener('gamepadconnected', () => { lastDevice = 'gamepad'; });
+
+  /* Called once per frame: merges keyboard + gamepad into input{} / cmd{}. */
+  let gpThrottleAbs = null;   // gamepad left-stick Y read as an ABSOLUTE throttle position (0..1), or null if no pad
+
+  function pollInput(dt) {
+    kb.thr = slew(kb.thr, axisKey('KeyS', 'KeyW'), dt);
+    kb.yaw = slew(kb.yaw, axisKey('KeyA', 'KeyD'), dt);
+    kb.pit = slew(kb.pit, axisKey('ArrowDown', 'ArrowUp'), dt);      // Up = nose down / fly forward
+    kb.rol = slew(kb.rol, axisKey('ArrowLeft', 'ArrowRight'), dt);
+
+    let gp = { thr: 0, yaw: 0, pit: 0, rol: 0 };
+    gpThrottleAbs = null;
+    // getGamepads() must be re-read every frame (it returns a fresh snapshot)
+    const pad = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).find(p => p && p.connected);
+    if (pad) {
+      const a = pad.axes;                                   // standard mapping: 0=LX 1=LY 2=RX 3=RY (up = -1)
+      const [yaw, thr] = radial(a[0] || 0, -(a[1] || 0));   // left stick, radial deadzone per stick (pitch/roll/yaw only)
+      const [rol, pit] = radial(a[2] || 0, -(a[3] || 0));   // right stick
+      gp = { thr, yaw, pit, rol };
+      // Throttle itself is read as a raw ABSOLUTE stick position, not a spring-centred deflection:
+      // no deadzone, no expo, no rate integration -- push the stick up = that much power, right now.
+      // (A standard gamepad stick still springs back to centre in HARDWARE when released, which reads
+      // as ~50% here; that's a physical limitation of using a self-centring stick as a position control,
+      // not a software auto-centre -- holding any other position takes deliberately holding the stick there.)
+      gpThrottleAbs = clamp((1 - (a[1] || 0)) / 2, 0, 1);
+
+      const btn = !!(pad.buttons[0] && pad.buttons[0].pressed);
+      if (btn && !prevArmBtn) toggleArm();                  // edge-triggered so holding doesn't flicker
+      prevArmBtn = btn;
+      const edge = (i, fn) => { const on = !!(pad.buttons[i] && pad.buttons[i].pressed); if (on && !padPrev[i]) fn(); padPrev[i] = on; };
+      edge(3, cycleCamera); edge(2, toggleThermal);   // Y, X
+      gimbalPad = (pad.buttons[12] && pad.buttons[12].pressed ? 1 : 0) - (pad.buttons[13] && pad.buttons[13].pressed ? 1 : 0);
+
+      padName = pad.id.replace(/\s*\(.*$/, '').replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, '') || pad.id;
+      if (btn || Math.abs(thr) + Math.abs(yaw) + Math.abs(pit) + Math.abs(rol) > 0) lastDevice = 'gamepad';
+    } else {
+      prevArmBtn = false; gimbalPad = 0;
+      if (lastDevice === 'gamepad') lastDevice = 'keyboard';
+    }
+
+    for (const k of ['thr', 'yaw', 'pit', 'rol']) {
+      input[k] = clamp(kb[k] + gp[k], -1, 1);
+      cmd[k] = expo(input[k]);
+    }
+    return pad;
+  }
+
+  /* =====================================================================
+   * Flight control (Mode 2, absolute throttle)
+   *  - Throttle: an ABSOLUTE lever position [0..1], read directly, with an AirMode idle floor.
+   *    'W'/'S' (or the left stick's Y deflection) drive its RATE of change; the lever itself never
+   *    auto-centres, decays, or snaps back -- it holds wherever it's left, in every flight mode.
+   *  - Roll/Pitch/Yaw: spring-returned stick deflections [-1..+1], unchanged from before.
+   *  - Vertical lift: TotalVerticalLift = MaxThrust * EffectiveThrottle * cos(pitch) * cos(roll),
+   *    NetVerticalAcceleration = TotalVerticalLift / Mass - 9.81, with MaxThrust = prop size's own thrustKgf * G.
+   *  - A mode-independent governor smoothly caps upward climb at +8 m/s.
+   * ===================================================================== */
+  const WN = 4.5, KDR = 7.0, KYAW_RATE = 6.0;   // attitude bandwidth (rad/s), rate damping (1/s), yaw-rate gain (1/s)
+  const up = new THREE.Vector3(), fwd = new THREE.Vector3(), rightVec = new THREE.Vector3(), desiredUp = new THREE.Vector3();
+  const axis = new THREE.Vector3(), wl = new THREE.Vector3(), tq = new THREE.Vector3(), localThrust = new THREE.Vector3();
+  const quat = new THREE.Quaternion(), qInv = new THREE.Quaternion();
+
+  let spin = 0;               // rotor spool factor 0..1 (visual spin and thrust build-up)
+  let wasArmed = false;
+  let thrustPct = 0;          // telemetry
+
+  const batteryPercent = () => build.usableWh > 0 ? Math.max(0, 100 - 100 * batteryUsedWh / build.usableWh) : 100;
+
+  function applyFlightForces() {
+    sanitizeBody();                          // never apply forces to a non-finite body
+    body.resetForces(false);                 // Rapier accumulates forces/torques until reset
+    body.resetTorques(false);
+    simTime += FIXED_DT;
+
+    /* ---- Mission tracking: gate pass-throughs and hard impacts, every substep so nothing is
+     * missed, independent of armed state (a crash while falling disarmed still counts). ---- */
+    {
+      const mp = body.translation(), mv = body.linvel();
+      if (finite(mp.x, mp.y, mp.z, mv.x, mv.y, mv.z)) {
+        const speed = Math.hypot(mv.x, mv.y, mv.z);
+        if (prevSpeed - speed > IMPACT_DROP_MPS) { missionCrashes++; }
+        prevSpeed = speed;
+        if (gates) {
+          gates.children.forEach((gate, i) => {
+            if (clearedGates.has(i)) return;
+            if (gate.position.distanceTo(mp) < 2.2) { clearedGates.add(i); missionGates++; }
+          });
+        }
+      }
+    }
+
+    applyWind();                             // wind acts on the airframe even when disarmed or falling
+    if (!window.isFlying || spin < 0.01) { thrustPct = 0; drawW = 0; landed = false; return; }
+
+    const r = body.rotation(), p = body.translation(), v = body.linvel();
+    const droneQuaternion = quat.set(r.x, r.y, r.z, r.w);
+    // Defensive: a rigid body's rotation quaternion can drift from unit length over many
+    // integration steps; if it drifts far enough, every rotation-dependent calculation below
+    // (up, fwd, desiredUp, torque) inherits the error, and in the worst case produces NaN that
+    // then poisons position too. Renormalize here, and write the corrected value back to Rapier,
+    // rather than only ever reacting after the fact in sanitizeBody().
+    const qLenSq = droneQuaternion.lengthSq();
+    if (!Number.isFinite(qLenSq) || qLenSq < 0.5) {
+      logGuardHit('quat-degenerate', `lengthSq=${qLenSq}`);
+      body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true); droneQuaternion.set(0, 0, 0, 1);
+    } else if (Math.abs(qLenSq - 1) > 0.01) {
+      droneQuaternion.normalize(); body.setRotation({ x: droneQuaternion.x, y: droneQuaternion.y, z: droneQuaternion.z, w: droneQuaternion.w }, true);
+    }
+    qInv.copy(droneQuaternion).invert();
+    up.set(0, 1, 0).applyQuaternion(droneQuaternion);        // drone's local Y in world space
+    const auth = build.authority;
+
+    /* --- Ground clearance (analytic heightmap, cheap & exact) drives "landed": near the ground,
+     * nearly still, and throttle held below hover -- used only to gate position-hold and rotor
+     * idle-visual-RPM now, not to branch the thrust formula (that's the same in every state). --- */
+    const groundY = terrainHeight(p.x, p.z);
+    const hoverThrottle = 1 / build.twr;
+    landed = (p.y - groundY) <= LAND_BAND && Math.abs(v.y) < 0.4 && manualThrottle < hoverThrottle * 0.6;
+
+    /* --- Absolute-throttle collective thrust: EffectiveThrottle is the pilot's lever position
+     * directly, in EVERY flight mode (GPS hold assists heading/position only, never altitude).
+     * AirMode keeps a small idle floor spinning the props for attitude authority even at 0%. */
+    const effectiveThrottle = Math.max(manualThrottle, IDLE_FLOOR);
+
+    // Decompose the drone's CURRENT attitude into pitch/roll angles about its own axes (forward =
+    // local +X, right = local -Z), so cos(pitch)*cos(roll) below reflects the real, current tilt.
+    fwd.set(1, 0, 0).applyQuaternion(droneQuaternion);
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-4) fwd.set(1, 0, 0);
+    fwd.normalize();
+    rightVec.set(-fwd.z, 0, fwd.x);
+    const projFwd = clamp(fwd.x * up.x + fwd.y * up.y + fwd.z * up.z, -1, 1);
+    const projRight = clamp(rightVec.x * up.x + rightVec.y * up.y + rightVec.z * up.z, -1, 1);
+    const pitchAngle = Math.asin(projFwd), rollAngle = Math.asin(projRight);
+
+    // MaxThrust = Mass * Gravity * TWR (build.maxThrust; recomputed by the customizer -- see applyBuild()).
+    let totalThrustMagnitude = build.maxThrust * effectiveThrottle * spin;
+
+    /* --- Commercial flight mode (drone types with hoverAssist): the throttle stick commands a
+     * CLIMB RATE instead of an absolute power level. Stick centred = hold the hover; push up =
+     * climb gently, push down = descend gently -- the way a real GPS/barometer-assisted
+     * commercial drone behaves, and it lands softly instead of dropping when you ease off.
+     * Deliberately stateless (no stored altitude target, no integral term), so there is nothing
+     * that can wind up or go stale -- just a bounded P-controller on vertical speed. The body's
+     * own linear damping (ARMED_LINEAR_DAMPING) is fed forward so the commanded speed is truly
+     * reached instead of settling short. FPV/racing/kamikaze skip this and stay fully manual. --- */
+    if (typePreset.hoverAssist) {
+      const VZ_MAX = 3.0;     // m/s climb/descent at full stick -- gentle, commercial-style
+      const KV = 3.0;         // 1/s: how firmly vertical speed is pulled toward the commanded value
+      const vzCmd = cmd.thr * VZ_MAX;
+      const tiltProj = Math.max(Math.cos(pitchAngle) * Math.cos(rollAngle), 0.5);
+      const accelCmd = clamp(KV * (vzCmd - v.y) + ARMED_LINEAR_DAMPING * v.y, -0.6 * G, 0.6 * G);   // m/s^2, bounded
+      totalThrustMagnitude = clamp(build.mass * (G + accelCmd) / tiltProj, 0, build.maxThrust) * spin;
+    }
+
+    /* --- Climb-rate governor: a smooth, hard ceiling at +8.0 m/s, active in every flight mode
+     * (it scales the WHOLE thrust magnitude, not just its vertical share, since real motors can't
+     * reduce only their vertical contribution -- tilted flight stays physically consistent). */
+    const MAX_CLIMB_MPS = 8.0, GOVERNOR_BAND = 1.5, GOVERNOR_KV = 3.0;
+    if (v.y > MAX_CLIMB_MPS - GOVERNOR_BAND) {
+      const tiltProj = Math.max(Math.cos(pitchAngle) * Math.cos(rollAngle), 0.5);
+      const hoverThrustMag = build.mass * G / tiltProj;
+      const fade = clamp((v.y - (MAX_CLIMB_MPS - GOVERNOR_BAND)) / GOVERNOR_BAND, 0, 1);
+      let capped = THREE.MathUtils.lerp(totalThrustMagnitude, hoverThrustMag, fade);
+      const overshoot = Math.max(0, v.y - MAX_CLIMB_MPS);
+      if (overshoot > 0) capped -= GOVERNOR_KV * build.mass * overshoot / tiltProj;
+      totalThrustMagnitude = clamp(Math.min(totalThrustMagnitude, capped), 0, build.maxThrust);
+    }
+
+    // TotalVerticalLift = MaxThrust * EffectiveThrottle * cos(pitch) * cos(roll) (exactly as specified);
+    // NetVerticalAcceleration = TotalVerticalLift / Mass - 9.81 follows directly from it.
+    const totalVerticalLift = totalThrustMagnitude * Math.cos(pitchAngle) * Math.cos(rollAngle);
+    const netVerticalAcceleration = totalVerticalLift / build.mass - G;   // kept for telemetry/reference
+
+    thrustPct = totalThrustMagnitude / build.maxThrust * 100;
+    // Battery: electrical power ~ thrust^1.5 around the hover operating point
+    drawW = IDLE_POWER_W + build.hoverW * (totalThrustMagnitude / (build.mass * G)) ** 1.5;
+    batteryUsedWh += drawW * FIXED_DT / 3600 * BATTERY_TIME_SCALE;
+
+    // Apply as a world-space force: the vertical share is exactly the formula above; the horizontal
+    // share is the SAME thrust vector's forward/right projection, so tilting the airframe still
+    // produces real translational flight (forward/back, strafing) as in earlier phases.
+    localThrust.set(
+      fwd.x * totalThrustMagnitude * projFwd + rightVec.x * totalThrustMagnitude * projRight,
+      totalVerticalLift,
+      fwd.z * totalThrustMagnitude * projFwd + rightVec.z * totalThrustMagnitude * projRight
+    );
+    // Hard guard: never hand Rapier a non-finite force, regardless of which upstream formula
+    // produced it -- this is the last line of defence against the whole class of bug this is.
+    if (finite(localThrust.x, localThrust.y, localThrust.z)) body.addForce(localThrust, true);
+    else logGuardHit('force', `localThrust=(${localThrust.x},${localThrust.y},${localThrust.z}) totalThrustMagnitude=${totalThrustMagnitude} projFwd=${projFwd} projRight=${projRight} pitchAngle=${pitchAngle} rollAngle=${rollAngle}`);
+
+    /* --- Desired "up" vector: pitch/roll sticks (spring-centred, up to +-MAX_TILT), plus a
+     * horizontal position hold when centred -- altitude is always the pilot's own throttle, so
+     * this only ever assists heading/position, never vertical speed. --- */
+    const pitCmd = landed ? 0 : cmd.pit, rolCmd = landed ? 0 : cmd.rol;   // no leaning while sitting on the skids
+    const tanP = Math.tan(pitCmd * build.tiltLimit * typePreset.tiltMult);     // + = lean forward (nose down)
+    const tanR = Math.tan(rolCmd * build.tiltLimit * typePreset.tiltMult);     // + = lean right (right side down)
+    desiredUp.set(fwd.x * tanP - fwd.z * tanR, 1, fwd.z * tanP + fwd.x * tanR);   // right = (-fwd.z, 0, fwd.x)
+    if (landed || Math.hypot(pitCmd, rolCmd) > 0.02) {
+      holdValid = false;                                 // pilot is steering (or we are parked): no position hold
+    } else {
+      if (!holdValid) { hold.set(p.x + v.x * 1.2, p.z + v.z * 1.2); posInt.set(0, 0); holdValid = true; }   // brake to a stop point
+      const ex = hold.x - p.x, ez = hold.z - p.z;
+      posInt.x = clamp(posInt.x + ex * FIXED_DT, -6, 6);   // integral term soaks up steady wind
+      posInt.y = clamp(posInt.y + ez * FIXED_DT, -6, 6);
+      let ax = 0.9 * ex - 2.0 * v.x + 0.5 * posInt.x, az = 0.9 * ez - 2.0 * v.z + 0.5 * posInt.y;
+      const aMax = G * Math.tan(build.tiltLimit) * 0.8, m = Math.hypot(ax, az);
+      if (m > aMax) { ax *= aMax / m; az *= aMax / m; }
+      desiredUp.x += ax / G; desiredUp.z += az / G;      // tilt the thrust vector toward the wanted acceleration
+    }
+    // Guard before normalize(): dividing a zero-length (or non-finite) vector by its own length
+    // produces NaN directly -- catch it here rather than downstream.
+    if (!finite(desiredUp.x, desiredUp.y, desiredUp.z) || desiredUp.lengthSq() < 1e-8) {
+      logGuardHit('desiredUp', `desiredUp=(${desiredUp.x},${desiredUp.y},${desiredUp.z}) landed=${landed} pitCmd=${pitCmd} rolCmd=${rolCmd} holdValid=${holdValid} hold=(${hold.x},${hold.y})`);
+      desiredUp.set(0, 1, 0);
+      // The position-hold anchor (`hold`) is set once and then reused every frame until the pilot
+      // steers or lands -- if it (or the math built from it) ever goes bad, it would otherwise stay
+      // bad forever, re-triggering this guard every single step. Clearing holdValid forces a fresh,
+      // known-good anchor to be captured on the very next frame instead.
+      holdValid = false;
+    }
+    desiredUp.normalize();
+
+    /* --- Local torque: attitude PD (roll/pitch), rate control (yaw). --- */
+    axis.crossVectors(up, desiredUp).applyQuaternion(qInv);
+    const w = body.angvel();
+    wl.set(w.x, w.y, w.z).applyQuaternion(qInv);
+    const I = build.inertia, ka = WN * WN * auth, kd = KDR * Math.sqrt(auth), lim = build.torqueLimit;
+    tq.set(
+      clamp(I.x * (ka * axis.x - kd * wl.x), -lim, lim),                                         // roll  (local X)
+      clamp(I.y * KYAW_RATE * (-cmd.yaw * MAX_YAW_RATE * typePreset.yawMult - wl.y), -0.4 * lim, 0.4 * lim),   // yaw   (local Y)
+      clamp(I.z * (ka * axis.z - kd * wl.z), -lim, lim)                                          // pitch (local Z)
+    ).applyQuaternion(droneQuaternion);
+    // Same hard guard as the force above: never hand Rapier a non-finite torque.
+    if (finite(tq.x, tq.y, tq.z)) body.addTorque(tq, true);
+    else logGuardHit('torque', `tq=(${tq.x},${tq.y},${tq.z}) axis=(${axis.x},${axis.y},${axis.z}) wl=(${wl.x},${wl.y},${wl.z}) I=(${I.x},${I.y},${I.z}) lim=${lim}`);
+  }
+
+  /* =====================================================================
+   * HUD: gimbals + telemetry
+   * ===================================================================== */
+  const $ = id => document.getElementById(id);
+  const hud = { armed: $('armed'), armedText: $('armedText'), dotL: $('dotL'), dotR: $('dotR'),
+                thr: $('tThr'), alt: $('tAlt'), altNow: $('tAltNow'), agl: $('tAgl'), dev: $('tDev'), btn: $('toggle'),
+                spd: $('tSpd'), vs: $('tVs'), bat: $('tBat'), hdg: $('tHdg'), cam: $('tCam'),
+                btnCam: $('btnCam'), btnThermal: $('btnThermal'),
+                gates: $('tGates'), crashes: $('tCrashes'), btnReturn: $('btnReturn') };
+  // Send session stats back to Mission Control so the pilot's profile can add them in.
+  // A local sim (file://) CAN navigate out to the hosted portal (https://) -- just not the
+  // other way around, which is why the portal's own Launch button can only show a query
+  // string rather than opening this file directly.
+  hud.btnReturn.addEventListener('click', () => {
+    const flightMinutes = (simTime / 60).toFixed(1);
+    const url = new URL(returnUrl);
+    url.searchParams.set('return', '1');
+    if (pilotName) url.searchParams.set('pilot', pilotName);
+    url.searchParams.set('gates', String(missionGates));
+    url.searchParams.set('crashes', String(missionCrashes));
+    url.searchParams.set('minutes', flightMinutes);
+    window.location.href = url.toString();
+  });
+  for (const [btn, fn] of [[hud.btnCam, cycleCamera], [hud.btnThermal, toggleThermal]]) {
+    btn.addEventListener('click', () => { fn(); btn.blur(); });
+  }
+  const TRAVEL = 42;   // dot travel in px (gimbal is 96px)
+  hud.btn.addEventListener('click', () => { toggleArm(); hud.btn.blur(); }); // blur: Space must not re-click it
+
+  function updateHUD(pad) {
+    const armed = !!window.isFlying;
+    hud.armed.classList.toggle('on', armed);
+    hud.armedText.textContent = armed ? 'Motors armed' : 'Motors disarmed';
+    hud.btn.textContent = armed ? 'Disarm motors' : 'Arm motors';
+    hud.dotL.style.transform = `translate(${input.yaw * TRAVEL}px, ${-input.thr * TRAVEL}px)`;
+    hud.dotR.style.transform = `translate(${input.rol * TRAVEL}px, ${-input.pit * TRAVEL}px)`;
+    const throttleVal = thrustPct / 100;
+    const throttlePct = Number.isFinite(throttleVal) ? Math.round(throttleVal * 100) : 0;
+    hud.thr.textContent = `${throttlePct}%`;
+    const pos = body.translation();                                    // altitude straight from the rigid body
+    const altitude = Number.isFinite(pos.y) ? pos.y : 0;
+    hud.altNow.textContent = altitude.toFixed(1) + ' m';
+    hud.agl.textContent = (Number.isFinite(aglReading) ? aglReading : 0).toFixed(1) + ' m';
+    // Raw pilot lever position -- distinct from "Throttle" above, which also reflects the AirMode
+    // idle floor and the climb-rate governor's own adjustments to the OUTPUT sent to the motors.
+    hud.alt.textContent = `${Math.round((Number.isFinite(manualThrottle) ? manualThrottle : 0) * 100)}%`;
+    hud.dev.textContent = lastDevice === 'gamepad' && pad ? `Gamepad: ${padName}` : 'Keyboard Active';
+
+    const lv = body.linvel();                     // plain {x, y, z} object (Rapier vectors have no length())
+    const groundSpeed = Math.hypot(lv.x, lv.z);
+    const speed = Number.isFinite(groundSpeed) ? groundSpeed * 3.6 : 0;
+    const climb = Number.isFinite(lv.y) ? lv.y : 0;
+    hud.spd.textContent = `${speed.toFixed(1)} km/h`;
+    hud.vs.textContent = `${climb >= 0 ? '+' : ''}${climb.toFixed(1)} m/s`;
+    const drawRate = armed ? drawW * BATTERY_TIME_SCALE / 60 / build.usableWh * 100 : 0;   // %/min at the current draw
+    const batteryLevel = batteryPercent();
+    const batPct = Number.isFinite(batteryLevel) ? Math.round(batteryLevel) : 100;
+    hud.bat.textContent = `${batPct}% · ${(Number.isFinite(drawRate) ? drawRate : 0).toFixed(1)}%/min`;
+    const heading = compassHeading();
+    const headingDeg = Number.isFinite(heading) ? Math.round(heading) % 360 : 0;
+    hud.hdg.textContent = `${headingDeg}° ${COMPASS[Math.round(headingDeg / 45) % 8]}`;
+    hud.cam.textContent = CAM_NAMES[camMode] + (camMode === 2 ? ` ${Math.round(THREE.MathUtils.radToDeg(gimbalPitch))}°` : '') + (thermalOn ? ' · FLIR' : '');
+    hud.gates.textContent = String(missionGates);
+    hud.crashes.textContent = String(missionCrashes);
+    hud.btnThermal.classList.toggle('on', thermalOn);
+  }
+
+  /* =====================================================================
+   * Animation loop: input -> fixed-step physics -> mesh sync -> render
+   * ===================================================================== */
+  const clock = new THREE.Clock();
+  let accumulator = 0;
+
+  function animate() {
+    requestAnimationFrame(animate);   // scheduled first, so one bad frame can never stop the loop
+    try {
+      frame();
+    } catch (err) {
+      console.error('Frame error (recovering):', err);
+      resetDrone(); sanitizeState();
+      renderer.setRenderTarget(null);
+    }
+  }
+
+  function frame() {
+    const dt = Math.max(0.001, Math.min(clock.getDelta(), 0.1));   // never 0, never a huge jump
+    const pad = pollInput(dt);
+
+    const armed = !!window.isFlying;
+    if (armed !== wasArmed) {
+      // The 1.2 linear damping that keeps the airframe stable in flight also quietly caps a
+      // disarmed fall at a constant terminal velocity (damping-limited, not gravity-limited --
+      // g / damping = 9.81 / 1.2 ~= 8.2 m/s, which is exactly the "gentle glide down" that
+      // wasn't supposed to happen). Drop damping to near-zero on disarm so gravity alone governs
+      // the fall, and restore it on arm so flight stays stable.
+      body.setLinearDamping(armed ? ARMED_LINEAR_DAMPING : 0.05);
+      if (!armed) manualThrottle = 0;   // disarm: lever drops to zero, nothing to auto-hover back to
+    }
+    wasArmed = armed;
+
+    // Absolute throttle lever. With a gamepad connected,
+    // its left-stick Y is read directly as an absolute position every frame (see pollInput()) --
+    // no rate, no integration, no centring. Keyboard has no analog position to read, so 'W'/'S'
+    // instead drive the RATE of change of the SAME persistent lever; either way, the lever never
+    // auto-centres, decays, or snaps back toward zero/hover when released.
+    if (armed) {
+      manualThrottle = gpThrottleAbs !== null ? gpThrottleAbs
+                                               : clamp(manualThrottle + cmd.thr * MANUAL_THROTTLE_RATE * typePreset.throttleRateMult * dt, 0, 1);
+    }
+
+    gimbalPitch = clamp(gimbalPitch + (axisKey('KeyE', 'KeyQ') + gimbalPad) * GIMBAL_RATE * dt, -Math.PI / 2, 0.2);
+
+    // Rotor spool-up / spool-down
+    spin += ((armed ? 1 : 0) - spin) * (1 - Math.exp(-(armed ? 2.5 : 1.2) * dt));
+    if (spin < 0.001) spin = 0;
+
+    // Fixed-rate physics, applying wind + pilot/controller forces before each step
+    accumulator += dt;
+    while (accumulator >= FIXED_DT) {
+      applyFlightForces();
+      world.step();
+      accumulator -= FIXED_DT;
+    }
+
+    // Sync Three.js drone with the rigid body (after a finite-state check)
+    sanitizeBody();
+    sanitizeState();
+    const p = body.translation(), q = body.rotation();
+    drone.position.set(p.x, p.y, p.z);
+    drone.quaternion.set(q.x, q.y, q.z, q.w);
+    // Props idle at low RPM while parked on the skids, full RPM once airborne
+    rotorRpm += (spin * (landed ? IDLE_RPM_VISUAL : 1) - rotorRpm) * (1 - Math.exp(-5 * dt));
+    for (const rotor of drone.userData.rotors) {
+      rotor.rotation.y += rotor.userData.direction * MAX_SPIN * rotorRpm * dt;
+    }
+
+    updateTargets(dt);
+    updateThermalTemps(dt);
+    updateHUD(pad);
+
+    // The shadow-casting light follows the drone, keeping its tight shadow frustum centred
+    sun.position.set(p.x + 6, 10, p.z + 4);
+    sun.target.position.set(p.x, 0, p.z);
+    if (sky) sky.material.uniforms.uSunDir.value.copy(sun.position).sub(sun.target.position).normalize();
+
+    updateGroundSensor();
+    updateCamera(dt);
+    renderFrame();
+  }
+
+  /* Resize handling */
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    resizeThermal();
+  });
+
+  animate();
+}
+
+main().catch(err => console.error('Failed to start simulation:', err));
+</script>
+</body>
+</html>
