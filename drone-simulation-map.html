@@ -106,6 +106,7 @@
 <div id="reticle" hidden></div>
 <div id="hud">
   <div id="pilotTag" style="display:none; font-family:monospace; font-size:11px; color:#8f9bb0; letter-spacing:.04em;"></div>
+  <div id="padDbg" style="display:none; font-family:monospace; font-size:10.5px; color:#8f9bb0; max-width:280px; word-break:break-all;"></div>
   <div id="diagTag" style="display:none; font-family:monospace; font-size:11px; color:#ff6b6b; letter-spacing:.02em; max-width:280px;"></div>
   <div id="armed"><i></i><span id="armedText">Motors disarmed</span></div>
   <div id="sticks">
@@ -240,6 +241,7 @@ const VEHICLE_SPEED        = 6;     // patrol vehicle speed (m/s)
 
 /* Absolute-throttle flight model */
 const IDLE_FLOOR  = 0.045;  // AirMode: idle power floor (4.5%) when armed with the throttle lever at 0
+const ARMED_LINEAR_DAMPING = 1.2;   // body linear damping while armed (stable flight); near-zero when disarmed so a fall is gravity-driven
 const IDLE_RPM_VISUAL      = 0.35;  // visual prop speed at idle
 
 /* Map-environment tunables. Leave the two URLs blank to use the built-in procedural
@@ -367,7 +369,7 @@ async function loadEnvironment(scene, renderer, sun, mapId) {
     const half = MAP_SIZE / 2;
     const cityPadRadius = 16;
     terrainHeight = isCity
-      ? (x, z) => (Math.hypot(x, z) < cityPadRadius ? 0.35 : 0)   // flat tarmac, except the raised central pad
+      ? (x, z) => 0   // flat tarmac: visual ground and the flat physics floor now agree everywhere
       : (x, z) => {
           const d = Math.hypot(x, z);
           const h = (fbm2(x, z) * 0.5 + 0.5) * MAX_HILL;             // remapped to 0..MAX_HILL (hills, never craters)
@@ -509,7 +511,9 @@ async function main() {
   const launchParams = new URLSearchParams(window.location.search);
   const pilotName = (launchParams.get('pilot') || '').trim().slice(0, 16);
   const requestedMap = (launchParams.get('map') || 'hills').trim().toLowerCase();
-  const requestedProps = parseInt(launchParams.get('props'), 10);   // 7-20, matches FRAMES' sizeIn
+  const requestedProps = parseInt(launchParams.get('props'), 10);
+  const padMapParam = (launchParams.get('padmap') || '').split(',').map(n => parseInt(n, 10));
+  const padMapOverride = padMapParam.length === 4 && padMapParam.every(n => Number.isInteger(n) && n >= 0) ? padMapParam : null;   // 7-20, matches FRAMES' sizeIn
   const MISSION_CONTROL_URL = 'index.html';
   const returnUrl = launchParams.get('return') || MISSION_CONTROL_URL;
 
@@ -710,11 +714,30 @@ async function main() {
     );
   }
 
-  // Dynamic rigid body for the drone, starting just above the ground
+  // Landing pad colliders: the flat ground collider is a plain slab at y = 0, but each pad's
+  // disc is raised visual geometry (its own group position plus a local 0.075 offset, radius
+  // 3.2, half-height 0.075 -- matching addPad() in loadEnvironment) -- without a matching
+  // collider here the drone rested on the invisible flat floor underneath instead of on the
+  // pad's visible surface, which is exactly why the pads looked hollow.
+  if (landingPads) {
+    for (const pad of landingPads.children) {
+      world.createCollider(
+        RAPIER.ColliderDesc.cylinder(0.075, 3.2)
+          .setTranslation(pad.position.x, pad.position.y + 0.075, pad.position.z)
+          .setFriction(0.8).setRestitution(0.1)
+      );
+    }
+  }
+
+  // Dynamic rigid body for the drone. It must start ON TOP of the home pad: the pad now has a real
+  // collider (disc top = pad group y + 0.15), so spawning at the old fixed height put the airframe
+  // inside the disc, pinned underneath it with the motors jammed into its underside.
+  const homePad = landingPads && landingPads.children[0];
+  const spawnY = (homePad ? homePad.position.y + 0.15 : 0) + SKID_DROP + 0.02;
   const body = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(0, SKID_DROP + 0.01, 0)
-      .setLinearDamping(1.2)   // air drag: keeps translation from running away
+      .setTranslation(0, spawnY, 0)
+      .setLinearDamping(ARMED_LINEAR_DAMPING)   // air drag: keeps translation from running away
       .setAngularDamping(2.5)  // keeps the airframe from spinning/wobbling
   );
 
@@ -724,6 +747,14 @@ async function main() {
   const clamp = THREE.MathUtils.clamp;
   const wind = { speed: 0, dir: 0 };      // km/h, and the compass bearing the wind blows FROM
   let manualThrottle = 0, holdValid = false;
+  // Height of whatever surface is under (x, z): terrain, or a landing-pad disc if we are over one.
+  const surfaceHeight = (x, z) => {
+    let h = terrainHeight(x, z);
+    for (const pad of landingPads.children) {
+      if (Math.hypot(x - pad.position.x, z - pad.position.z) <= 3.2) h = Math.max(h, pad.position.y + 0.15);
+    }
+    return h;
+  };
   let missionGates = 0, missionCrashes = 0, prevSpeed = 0;
   const clearedGates = new Set();
   const IMPACT_DROP_MPS = 4.5;   // a sudden speed loss bigger than this, in one physics step, counts as an impact
@@ -862,16 +893,23 @@ async function main() {
     byId('buildSummary').innerHTML =
       `${f.sizeIn}" ${f.name.replace(/^\d+" /, '')} &middot; ${s.mass.toFixed(2)} kg<br>` +
       `${m.name} &middot; ${b.name}<br>` +
-      `TWR ${s.twr.toFixed(1)}${twrNote} &middot; ${s.twr < 1 ? 'n/a' : s.flightMin.toFixed(1) + ' min'}`;
+      `TWR ${s.twr.toFixed(1)}${twrNote} &middot; ${s.twr < 1 ? 'n/a' : s.flightMin.toFixed(1) + ' min'}<br>` +
+      (typePreset.hoverAssist
+        ? `<b>${typePreset.label}</b>: throttle stick = climb rate (centred holds hover, max 3 m/s)`
+        : `<b>${typePreset.label}</b>: throttle stick = raw power (manual)`);
   }
 
   // The drone TYPE picked on the portal selects a motor/battery preset; it is not
   // chosen separately in the simulator. Prop size (?props=) picks FRAMES directly.
   const DRONE_TYPES = {
-    commercial: { motor: 1, battery: 2, label: 'Commercial' },   // high-efficiency motor, heavy long-range pack: stable, docile
-    fpv:        { motor: 1, battery: 1, label: 'FPV Freestyle' },// high-efficiency motor, mid 2S pack: balanced
-    racing:     { motor: 2, battery: 0, label: 'Racing FPV' },   // best motor, lightest 1S pack: light and punchy
-    kamikaze:   { motor: 2, battery: 0, label: 'FPV Kamikaze' }  // same light/fast airframe, flown at an attack target
+    // tiltMult/yawMult scale how far the airframe is ALLOWED to lean/turn (gentler for commercial);
+    // throttleRateMult slows how fast the throttle lever itself can move (smoother power delivery);
+    // hoverAssist turns on auto-hover: releasing the stick cancels vertical drift instead of needing
+    // constant manual throttle, the way a real GPS/barometer-assisted commercial drone behaves.
+    commercial: { motor: 1, battery: 2, label: 'Commercial',    tiltMult: 0.55, yawMult: 0.5, throttleRateMult: 0.6, hoverAssist: true  },
+    fpv:        { motor: 1, battery: 1, label: 'FPV Freestyle', tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false },
+    racing:     { motor: 2, battery: 0, label: 'Racing FPV',    tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false },
+    kamikaze:   { motor: 2, battery: 0, label: 'FPV Kamikaze',  tiltMult: 1.0,  yawMult: 1.0, throttleRateMult: 1.0, hoverAssist: false }
   };
   const requestedType = (launchParams.get('type') || 'fpv').trim().toLowerCase();
   const typePreset = DRONE_TYPES[requestedType] || DRONE_TYPES.fpv;
@@ -1217,15 +1255,22 @@ async function main() {
     const pad = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).find(p => p && p.connected);
     if (pad) {
       const a = pad.axes;                                   // standard mapping: 0=LX 1=LY 2=RX 3=RY (up = -1)
-      const [yaw, thr] = radial(a[0] || 0, -(a[1] || 0));   // left stick, radial deadzone per stick (pitch/roll/yaw only)
-      const [rol, pit] = radial(a[2] || 0, -(a[3] || 0));   // right stick
+      // Axis layout. A 'standard' pad puts the right stick on axes 2/3. Generic USB joysticks (the
+      // 'Generic USB Joystick' type) usually report a non-standard layout where the right stick is on
+      // axes 2 and 5 (Z / Rz) and 3/4 are triggers or unused, so default to that when there are 6+ axes.
+      // Override with ?padmap=lx,ly,rx,ry (for example ?padmap=0,1,2,5) if your pad differs.
+      const m = padMapOverride || (pad.mapping === 'standard' ? [0, 1, 2, 3] : (a.length >= 6 ? [0, 1, 2, 5] : [0, 1, 2, 3]));
+      const [yaw, thr] = radial(a[m[0]] || 0, -(a[m[1]] || 0));   // left stick, radial deadzone per stick (pitch/roll/yaw only)
+      const [rol, pit] = radial(a[m[2]] || 0, -(a[m[3]] || 0));   // right stick
+      const dbg = document.getElementById('padDbg');
+      if (dbg) { dbg.style.display = 'block'; dbg.textContent = `pad ${pad.mapping || 'non-standard'} \u00b7 axes ${Array.from(a).map(v => v.toFixed(1)).join(' ')} \u00b7 using ${m.join(',')}`; }
       gp = { thr, yaw, pit, rol };
       // Throttle itself is read as a raw ABSOLUTE stick position, not a spring-centred deflection:
       // no deadzone, no expo, no rate integration -- push the stick up = that much power, right now.
       // (A standard gamepad stick still springs back to centre in HARDWARE when released, which reads
       // as ~50% here; that's a physical limitation of using a self-centring stick as a position control,
       // not a software auto-centre -- holding any other position takes deliberately holding the stick there.)
-      gpThrottleAbs = clamp((1 - (a[1] || 0)) / 2, 0, 1);
+      gpThrottleAbs = clamp((1 - (a[m[1]] || 0)) / 2, 0, 1);
 
       const btn = !!(pad.buttons[0] && pad.buttons[0].pressed);
       if (btn && !prevArmBtn) toggleArm();                  // edge-triggered so holding doesn't flicker
@@ -1293,7 +1338,7 @@ async function main() {
     }
 
     applyWind();                             // wind acts on the airframe even when disarmed or falling
-    if (!window.isFlying || spin < 0.01 || batteryPercent() <= 0) { thrustPct = 0; drawW = 0; landed = false; return; }
+    if (!window.isFlying || spin < 0.01) { thrustPct = 0; drawW = 0; landed = false; return; }
 
     const r = body.rotation(), p = body.translation(), v = body.linvel();
     const droneQuaternion = quat.set(r.x, r.y, r.z, r.w);
@@ -1316,9 +1361,10 @@ async function main() {
     /* --- Ground clearance (analytic heightmap, cheap & exact) drives "landed": near the ground,
      * nearly still, and throttle held below hover -- used only to gate position-hold and rotor
      * idle-visual-RPM now, not to branch the thrust formula (that's the same in every state). --- */
-    const groundY = terrainHeight(p.x, p.z);
+    const groundY = surfaceHeight(p.x, p.z);
     const hoverThrottle = 1 / build.twr;
-    landed = (p.y - groundY) <= LAND_BAND && Math.abs(v.y) < 0.4 && manualThrottle < hoverThrottle * 0.6;
+    // (commercial types fly by climb rate, so the throttle LEVER means nothing for them)
+    landed = (p.y - groundY) <= LAND_BAND && Math.abs(v.y) < 0.4 && (typePreset.hoverAssist || manualThrottle < hoverThrottle * 0.6);
 
     /* --- Absolute-throttle collective thrust: EffectiveThrottle is the pilot's lever position
      * directly, in EVERY flight mode (GPS hold assists heading/position only, never altitude).
@@ -1338,6 +1384,23 @@ async function main() {
 
     // MaxThrust = Mass * Gravity * TWR (build.maxThrust; recomputed by the customizer -- see applyBuild()).
     let totalThrustMagnitude = build.maxThrust * effectiveThrottle * spin;
+
+    /* --- Commercial flight mode (drone types with hoverAssist): the throttle stick commands a
+     * CLIMB RATE instead of an absolute power level. Stick centred = hold the hover; push up =
+     * climb gently, push down = descend gently -- the way a real GPS/barometer-assisted
+     * commercial drone behaves, and it lands softly instead of dropping when you ease off.
+     * Deliberately stateless (no stored altitude target, no integral term), so there is nothing
+     * that can wind up or go stale -- just a bounded P-controller on vertical speed. The body's
+     * own linear damping (ARMED_LINEAR_DAMPING) is fed forward so the commanded speed is truly
+     * reached instead of settling short. FPV/racing/kamikaze skip this and stay fully manual. --- */
+    if (typePreset.hoverAssist) {
+      const VZ_MAX = 3.0;     // m/s climb/descent at full stick -- gentle, commercial-style
+      const KV = 3.0;         // 1/s: how firmly vertical speed is pulled toward the commanded value
+      const vzCmd = cmd.thr * VZ_MAX;
+      const tiltProj = Math.max(Math.cos(pitchAngle) * Math.cos(rollAngle), 0.5);
+      const accelCmd = clamp(KV * (vzCmd - v.y) + ARMED_LINEAR_DAMPING * v.y, -0.6 * G, 0.6 * G);   // m/s^2, bounded
+      totalThrustMagnitude = clamp(build.mass * (G + accelCmd) / tiltProj, 0, build.maxThrust) * spin;
+    }
 
     /* --- Climb-rate governor: a smooth, hard ceiling at +8.0 m/s, active in every flight mode
      * (it scales the WHOLE thrust magnitude, not just its vertical share, since real motors can't
@@ -1380,14 +1443,14 @@ async function main() {
      * horizontal position hold when centred -- altitude is always the pilot's own throttle, so
      * this only ever assists heading/position, never vertical speed. --- */
     const pitCmd = landed ? 0 : cmd.pit, rolCmd = landed ? 0 : cmd.rol;   // no leaning while sitting on the skids
-    const tanP = Math.tan(pitCmd * build.tiltLimit);     // + = lean forward (nose down)
-    const tanR = Math.tan(rolCmd * build.tiltLimit);     // + = lean right (right side down)
+    const tanP = Math.tan(pitCmd * build.tiltLimit * typePreset.tiltMult);     // + = lean forward (nose down)
+    const tanR = Math.tan(rolCmd * build.tiltLimit * typePreset.tiltMult);     // + = lean right (right side down)
     desiredUp.set(fwd.x * tanP - fwd.z * tanR, 1, fwd.z * tanP + fwd.x * tanR);   // right = (-fwd.z, 0, fwd.x)
-    if (landed || Math.hypot(pitCmd, rolCmd) > 0.02) {
+    if (!typePreset.hoverAssist || landed || Math.hypot(pitCmd, rolCmd) > 0.02) {
       holdValid = false;                                 // pilot is steering (or we are parked): no position hold
     } else {
       if (!holdValid) { hold.set(p.x + v.x * 1.2, p.z + v.z * 1.2); posInt.set(0, 0); holdValid = true; }   // brake to a stop point
-      const ex = hold.x - p.x, ez = hold.z - p.z;
+      const ex = hold.x - p.x, ez = hold.y - p.z;   // hold is a Vector2: its .y holds the world-Z anchor (there is no hold.z)
       posInt.x = clamp(posInt.x + ex * FIXED_DT, -6, 6);   // integral term soaks up steady wind
       posInt.y = clamp(posInt.y + ez * FIXED_DT, -6, 6);
       let ax = 0.9 * ex - 2.0 * v.x + 0.5 * posInt.x, az = 0.9 * ez - 2.0 * v.z + 0.5 * posInt.y;
@@ -1415,7 +1478,7 @@ async function main() {
     const I = build.inertia, ka = WN * WN * auth, kd = KDR * Math.sqrt(auth), lim = build.torqueLimit;
     tq.set(
       clamp(I.x * (ka * axis.x - kd * wl.x), -lim, lim),                                         // roll  (local X)
-      clamp(I.y * KYAW_RATE * (-cmd.yaw * MAX_YAW_RATE - wl.y), -0.4 * lim, 0.4 * lim),          // yaw   (local Y)
+      clamp(I.y * KYAW_RATE * (-cmd.yaw * MAX_YAW_RATE * typePreset.yawMult - wl.y), -0.4 * lim, 0.4 * lim),   // yaw   (local Y)
       clamp(I.z * (ka * axis.z - kd * wl.z), -lim, lim)                                          // pitch (local Z)
     ).applyQuaternion(droneQuaternion);
     // Same hard guard as the force above: never hand Rapier a non-finite torque.
@@ -1468,7 +1531,7 @@ async function main() {
     hud.agl.textContent = (Number.isFinite(aglReading) ? aglReading : 0).toFixed(1) + ' m';
     // Raw pilot lever position -- distinct from "Throttle" above, which also reflects the AirMode
     // idle floor and the climb-rate governor's own adjustments to the OUTPUT sent to the motors.
-    hud.alt.textContent = `${Math.round((Number.isFinite(manualThrottle) ? manualThrottle : 0) * 100)}%`;
+    hud.alt.textContent = typePreset.hoverAssist ? 'climb-rate mode' : `${Math.round((Number.isFinite(manualThrottle) ? manualThrottle : 0) * 100)}%`;
     hud.dev.textContent = lastDevice === 'gamepad' && pad ? `Gamepad: ${padName}` : 'Keyboard Active';
 
     const lv = body.linvel();                     // plain {x, y, z} object (Rapier vectors have no length())
@@ -1512,7 +1575,15 @@ async function main() {
     const pad = pollInput(dt);
 
     const armed = !!window.isFlying;
-    if (!armed && wasArmed) manualThrottle = 0;   // disarm: lever drops to zero, nothing to auto-hover back to
+    if (armed !== wasArmed) {
+      // The 1.2 linear damping that keeps the airframe stable in flight also quietly caps a
+      // disarmed fall at a constant terminal velocity (damping-limited, not gravity-limited --
+      // g / damping = 9.81 / 1.2 ~= 8.2 m/s, which is exactly the "gentle glide down" that
+      // wasn't supposed to happen). Drop damping to near-zero on disarm so gravity alone governs
+      // the fall, and restore it on arm so flight stays stable.
+      body.setLinearDamping(armed ? ARMED_LINEAR_DAMPING : 0.05);
+      if (!armed) manualThrottle = 0;   // disarm: lever drops to zero, nothing to auto-hover back to
+    }
     wasArmed = armed;
 
     // Absolute throttle lever. With a gamepad connected,
@@ -1522,7 +1593,7 @@ async function main() {
     // auto-centres, decays, or snaps back toward zero/hover when released.
     if (armed) {
       manualThrottle = gpThrottleAbs !== null ? gpThrottleAbs
-                                               : clamp(manualThrottle + cmd.thr * MANUAL_THROTTLE_RATE * dt, 0, 1);
+                                               : clamp(manualThrottle + cmd.thr * MANUAL_THROTTLE_RATE * typePreset.throttleRateMult * dt, 0, 1);
     }
 
     gimbalPitch = clamp(gimbalPitch + (axisKey('KeyE', 'KeyQ') + gimbalPad) * GIMBAL_RATE * dt, -Math.PI / 2, 0.2);
